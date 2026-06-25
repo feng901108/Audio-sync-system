@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no" />
+<title>聚光广播 · 聆听</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="player-page">
+<main id="app">
+  <section id="join" class="join">
+    <h1>聚光广播</h1>
+    <p>点击下方按钮加入广播。请保持页面前台。</p>
+    <input id="device-name" placeholder="给这台设备起个名字" />
+    <button id="join-btn">加入广播</button>
+  </section>
+  <section id="player" hidden>
+    <div class="now-playing">
+      <div class="title" id="title">等待广播…</div>
+    </div>
+    <div class="progress">
+      <span id="position">0:00</span>
+      <div class="bar"><div id="bar-fill"></div></div>
+      <span id="duration">0:00</span>
+    </div>
+    <div class="meta">
+      <span>设备：<b id="device-label">—</b></span>
+      <span>偏差：<b id="drift">0</b> ms</span>
+      <span>RTT：<b id="rtt">0</b> ms</span>
+      <span>时钟差：<b id="offset">0</b> ms</span>
+    </div>
+    <div class="volume-row">
+      <label>本机音量 <input id="vol" type="range" min="0" max="1" step="0.01" value="1" /></label>
+    </div>
+    <div class="status" id="conn-status">连接中…</div>
+  </section>
+</main>
+<script type="module">
+import { SyncClient } from "/sync.js";
+const $ = (id) => document.getElementById(id);
+const fmt = (ms) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+const savedName = localStorage.getItem("juguang.deviceName") ?? "";
+$("device-name").value = savedName || `Web-${Math.random().toString(36).slice(2, 6)}`;
+
+$("join-btn").addEventListener("click", async () => {
+  const name = $("device-name").value.trim() || "Web";
+  localStorage.setItem("juguang.deviceName", name);
+  const client = new SyncClient(name, "web");
+  await client.connect();
+  $("join").hidden = true;
+  $("player").hidden = false;
+  $("vol").addEventListener("input", () => client.setLocalVolume(Number($("vol").value)));
+  client.on((s) => {
+    $("title").textContent = s.trackTitle ?? (s.isPlaying ? "播放中" : "等待广播…");
+    $("position").textContent = fmt(s.positionMs);
+    $("duration").textContent = fmt(s.durationMs);
+    $("bar-fill").style.width = s.durationMs > 0 ? `${(s.positionMs / s.durationMs) * 100}%` : "0%";
+    $("device-label").textContent = s.deviceId ? `${name} · ${s.deviceId.slice(0, 6)}` : name;
+    $("drift").textContent = String(s.driftMs);
+    $("rtt").textContent = String(s.rttMs);
+    $("offset").textContent = String(s.clockOffsetMs);
+    $("conn-status").textContent = s.connected ? "已连接" : "已断开,正在重连…";
+    $("conn-status").className = "status " + (s.connected ? "ok" : "warn");
+  });
+  if ("wakeLock" in navigator) { try { await navigator.wakeLock.request("screen"); } catch {} }
+});
+</script>
+</body>
+</html>

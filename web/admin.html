@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>聚光广播 · 管理</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="admin-page">
+<main id="app">
+  <section id="login" class="login">
+    <h1>聚光广播 · 管理</h1>
+    <input id="username" placeholder="用户名" autocomplete="username" />
+    <input id="password" placeholder="密码" type="password" autocomplete="current-password" />
+    <button id="login-btn">登录</button>
+    <p id="login-err" class="err"></p>
+    <p class="hint">首次使用请在服务器执行 <code>node server/init-admin.mjs admin yourpass</code></p>
+  </section>
+
+  <section id="dashboard" hidden>
+    <header class="topbar">
+      <h2>聚光广播管理</h2>
+      <div><span id="who"></span><button id="logout-btn">登出</button></div>
+    </header>
+
+    <section class="now">
+      <h3>当前播放</h3>
+      <div class="now-info">
+        <div id="now-title">—</div>
+        <div class="now-controls">
+          <button id="btn-pause">暂停</button>
+          <button id="btn-resume">继续</button>
+          <button id="btn-next">下一首</button>
+          <button id="btn-stop">停止</button>
+        </div>
+      </div>
+      <div class="now-meta">
+        <span>位置：<b id="now-pos">0</b> / <b id="now-dur">0</b> ms</span>
+        <span>状态：<b id="now-state">—</b></span>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h3>曲库</h3>
+        <form id="upload-form" class="upload">
+          <input id="upload-file" type="file" accept="audio/*" />
+          <button type="submit">上传</button>
+        </form>
+        <ul id="track-list" class="list"></ul>
+      </div>
+      <div class="panel">
+        <h3>播放队列</h3>
+        <ul id="queue-list" class="list"></ul>
+        <button id="clear-queue">清空队列</button>
+      </div>
+      <div class="panel">
+        <h3>设备</h3>
+        <ul id="device-list" class="list"></ul>
+      </div>
+    </section>
+  </section>
+</main>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+
+async function api(path, init = {}) {
+  const headers = { ...(init.headers || {}) };
+  let body = init.body;
+  if (init.json !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(init.json); }
+  const r = await fetch(path, { ...init, headers, body, credentials: "include" });
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const j = await r.json(); if (j?.error) msg = j.error; } catch {}
+    throw new Error(msg);
+  }
+  return await r.json();
+}
+
+let tracks = [];
+
+async function refreshTracks() {
+  const r = await api("/api/tracks");
+  tracks = r.tracks;
+  const ul = $("track-list");
+  ul.innerHTML = "";
+  for (const t of tracks) {
+    const li = document.createElement("li");
+    li.innerHTML = `<div><b></b><small></small></div>
+      <div class="row-actions">
+        <span class="dur">${Math.round(t.duration_ms / 1000)}s</span>
+        <button data-act="play">▶</button><button data-act="enqueue">+队列</button><button data-act="del">删</button>
+      </div>`;
+    li.querySelector("b").textContent = t.title;
+    li.querySelector("small").textContent = t.artist ?? "";
+    li.querySelector('[data-act="play"]').addEventListener("click", async () => {
+      await api("/api/playback/play", { method: "POST", json: { trackId: t.id } });
+      await refreshPlayback();
+    });
+    li.querySelector('[data-act="enqueue"]').addEventListener("click", async () => {
+      await api("/api/queue/enqueue", { method: "POST", json: { trackIds: [t.id] } });
+      await refreshPlayback();
+    });
+    li.querySelector('[data-act="del"]').addEventListener("click", async () => {
+      if (!confirm(`删除 ${t.title}？`)) return;
+      await api(`/api/tracks/${t.id}`, { method: "DELETE" });
+      await refreshTracks();
+    });
+    ul.appendChild(li);
+  }
+}
+
+async function refreshDevices() {
+  const r = await api("/api/devices");
+  const ul = $("device-list");
+  ul.innerHTML = "";
+  for (const d of r.devices) {
+    const li = document.createElement("li");
+    li.innerHTML = `<div><span class="dot ${d.online ? "ok" : ""}"></span><b class="dname"></b><small></small></div>
+      <div class="row-actions">
+        <input type="range" min="0" max="1" step="0.01" value="${d.volume}" />
+        <span class="vol-val">${Math.round(d.volume * 100)}%</span>
+        <button data-act="rename">改名</button><button data-act="remove">移除</button>
+      </div>`;
+    li.querySelector(".dname").textContent = d.name;
+    li.querySelector("small").textContent = ` ${d.kind} · ${d.id.slice(0, 6)}`;
+    const range = li.querySelector("input");
+    const valEl = li.querySelector(".vol-val");
+    range.addEventListener("input", () => { valEl.textContent = `${Math.round(Number(range.value) * 100)}%`; });
+    range.addEventListener("change", async () => {
+      await api(`/api/devices/${d.id}`, { method: "PATCH", json: { volume: Number(range.value) } });
+    });
+    li.querySelector('[data-act="rename"]').addEventListener("click", async () => {
+      const name = prompt("新名字", d.name); if (!name) return;
+      await api(`/api/devices/${d.id}`, { method: "PATCH", json: { name } });
+      await refreshDevices();
+    });
+    li.querySelector('[data-act="remove"]').addEventListener("click", async () => {
+      if (!confirm(`移除 ${d.name}？`)) return;
+      await api(`/api/devices/${d.id}`, { method: "DELETE" });
+      await refreshDevices();
+    });
+    ul.appendChild(li);
+  }
+}
+
+async function refreshPlayback() {
+  const s = await api("/api/playback");
+  $("now-title").textContent = s.track ? `${s.track.title}${s.track.artist ? " — " + s.track.artist : ""}` : "—";
+  const pos = s.isPlaying && s.startServerTime ? s.trackOffsetMs + (s.serverTime - s.startServerTime) : s.trackOffsetMs;
+  $("now-pos").textContent = String(Math.max(0, Math.round(pos)));
+  $("now-dur").textContent = String(s.track?.durationMs ?? 0);
+  $("now-state").textContent = s.isPlaying ? "播放中" : s.track ? "已暂停" : "空闲";
+  const ql = $("queue-list");
+  ql.innerHTML = "";
+  s.queue.forEach((tid, idx) => {
+    const t = tracks.find((x) => x.id === tid);
+    const li = document.createElement("li");
+    li.innerHTML = `<span></span>`;
+    li.querySelector("span").textContent = `${idx + 1}. ${t ? t.title : tid}`;
+    ql.appendChild(li);
+  });
+}
+
+async function bootDashboard() {
+  $("login").hidden = true;
+  $("dashboard").hidden = false;
+
+  $("btn-pause").onclick = async () => { await api("/api/playback/pause", { method: "POST" }); refreshPlayback(); };
+  $("btn-resume").onclick = async () => { await api("/api/playback/resume", { method: "POST" }); refreshPlayback(); };
+  $("btn-next").onclick = async () => { await api("/api/playback/next", { method: "POST" }); refreshPlayback(); };
+  $("btn-stop").onclick = async () => { await api("/api/playback/stop", { method: "POST" }); refreshPlayback(); };
+  $("clear-queue").onclick = async () => { await api("/api/queue/clear", { method: "POST" }); refreshPlayback(); };
+  $("logout-btn").onclick = async () => { await api("/api/auth/logout", { method: "POST" }); location.reload(); };
+
+  $("upload-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = $("upload-file").files?.[0]; if (!f) return;
+    const fd = new FormData(); fd.append("file", f);
+    const r = await fetch("/api/tracks", { method: "POST", body: fd, credentials: "include" });
+    if (!r.ok) { alert("上传失败：" + (await r.text())); return; }
+    $("upload-file").value = "";
+    refreshTracks();
+  });
+
+  await refreshTracks();
+  await refreshDevices();
+  await refreshPlayback();
+  setInterval(refreshPlayback, 1000);
+  setInterval(refreshDevices, 3000);
+}
+
+(async () => {
+  const me = await api("/api/auth/me");
+  if (me.authenticated) { $("who").textContent = (me.username ?? "") + " "; bootDashboard(); return; }
+  $("login-btn").onclick = async () => {
+    const u = $("username").value, p = $("password").value;
+    try {
+      await api("/api/auth/login", { method: "POST", json: { username: u, password: p } });
+      $("who").textContent = u + " ";
+      bootDashboard();
+    } catch (e) { $("login-err").textContent = e?.message ?? "登录失败"; }
+  };
+})();
+</script>
+</body>
+</html>
