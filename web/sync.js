@@ -1,4 +1,6 @@
 const PING_INTERVAL_MS = 2000;
+const PING_BURST_COUNT = 5;
+const PING_BURST_INTERVAL_MS = 100;
 const DRIFT_CHECK_MS = 3000;
 const RATE_TWEAK = 0.005;
 const RATE_LIMIT_MS = 200;
@@ -24,11 +26,15 @@ export class SyncClient {
     this.clockSamples = [];
     this.listeners = new Set();
     this.pingTimer = null;
+    this.pingBurstTimer = null;
     this.driftTimer = null;
     this.reconnectTimer = null;
     // 两层音量：master 来自服务端下发（admin 调的），local 是用户本机拉杆（0-1 倍率）
     this.masterVolume = 1;
     this.localVolume = 1;
+    // 预缓存：trackId -> { buffer, url }；进 zone 时后台 fetch+decode 队列里所有曲目
+    this._preloadCache = new Map();
+    this._preloadInFlight = new Set();
     this.status = {
       deviceId: null, connected: false, clockOffsetMs: 0, rttMs: 0,
       trackTitle: null, positionMs: 0, durationMs: 0,
@@ -66,6 +72,7 @@ export class SyncClient {
       }));
       this._startPing();
       this._startDrift();
+      this._preloadQueue();
     };
     this.ws.onmessage = (ev) => this._handle(JSON.parse(ev.data));
     this.ws.onclose = () => {
@@ -80,15 +87,34 @@ export class SyncClient {
 
   _startPing() {
     this._stopPing();
-    const tick = () => {
+    // 快速 NTP 收敛：开头连发 PING_BURST_COUNT 次
+    let n = 0;
+    const burst = () => {
+      if (n >= PING_BURST_COUNT) {
+        this.pingBurstTimer = null;
+        return;
+      }
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: "ping", t0: Date.now() }));
+        n++;
+        this.pingBurstTimer = setTimeout(burst, PING_BURST_INTERVAL_MS);
+      } else {
+        this.pingBurstTimer = null;
+      }
+    };
+    burst();
+    // 然后 2s 一次正常轮询
+    this.pingTimer = setInterval(() => {
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ type: "ping", t0: Date.now() }));
       }
-    };
-    tick();
-    this.pingTimer = setInterval(tick, PING_INTERVAL_MS);
+    }, PING_INTERVAL_MS);
   }
-  _stopPing() { if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; } }
+
+  _stopPing() {
+    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
+    if (this.pingBurstTimer) { clearTimeout(this.pingBurstTimer); this.pingBurstTimer = null; }
+  }
   _startDrift() { this._stopDrift(); this.driftTimer = setInterval(() => this._drift(), DRIFT_CHECK_MS); }
   _stopDrift() { if (this.driftTimer) { clearInterval(this.driftTimer); this.driftTimer = null; } }
   _stopLoops() { this._stopPing(); this._stopDrift(); }
@@ -151,7 +177,12 @@ export class SyncClient {
   async _startTrack(trackId, trackUrl, durationMs, startServerTime, trackOffsetMs) {
     if (!this.ctx) return;
     if (this.currentTrackId !== trackId || this.currentTrackUrl !== trackUrl) {
-      const buf = await fetch(trackUrl).then((r) => r.arrayBuffer()).then((b) => this.ctx.decodeAudioData(b));
+      // 优先用预缓存；没有就即时 fetch+decode（首次冷启动）
+      let buf = this._preloadCache.get(trackId)?.buffer;
+      if (!buf) {
+        buf = await this._fetchAndDecode(trackUrl);
+        if (!buf) return;
+      }
       this.currentBuffer = buf;
       this.currentTrackId = trackId;
       this.currentTrackUrl = trackUrl;
@@ -222,5 +253,46 @@ export class SyncClient {
     this.localVolume = Math.max(0, Math.min(1, Number(v)));
     this._applyVolume();
     this._update({ volume: this.masterVolume * this.localVolume, localVolume: this.localVolume });
+  }
+
+  // === 预缓存 ===
+
+  async _fetchAndDecode(url) {
+    if (!this.ctx) return null;
+    const r = await fetch(url);
+    const ab = await r.arrayBuffer();
+    return await this.ctx.decodeAudioData(ab);
+  }
+
+  // 从服务端拉队列和曲目元数据，依次后台 fetch+decode
+  async _preloadQueue() {
+    try {
+      const r = await fetch(`/api/zones/${this.zoneId}/snapshot`);
+      const snap = await r.json();
+      const ids = [];
+      if (snap.track) ids.push(snap.track.id);
+      for (const tid of snap.queue) ids.push(tid);
+      const tracksRes = await fetch("/api/tracks");
+      const tracks = (await tracksRes.json()).tracks;
+      const byId = new Map(tracks.map((t) => [t.id, t]));
+      for (const id of ids) {
+        const t = byId.get(id);
+        if (!t) continue;
+        this._preloadTrack(t.id, `/audio/${t.filename}`);
+      }
+    } catch (e) {
+      // 静默失败：预缓存是优化路径，失败就走即时 fetch
+    }
+  }
+
+  _preloadTrack(trackId, url) {
+    if (this._preloadCache.has(trackId) || this._preloadInFlight.has(trackId)) return;
+    this._preloadInFlight.add(trackId);
+    this._fetchAndDecode(url)
+      .then((buf) => {
+        if (buf) this._preloadCache.set(trackId, { buffer: buf, url });
+      })
+      .catch(() => {})
+      .finally(() => this._preloadInFlight.delete(trackId));
   }
 }
