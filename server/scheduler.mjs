@@ -1,6 +1,6 @@
 import { db } from "./db.mjs";
 
-const PRELOAD_MS = 1500;
+export const PRELOAD_MS = 1500;
 const DEFAULT_ZONE = 1;
 
 let _hub = null;
@@ -50,6 +50,7 @@ function clearAdvance(zoneId) {
 
 function scheduleAdvance(zoneId, durationMs, startServerTime, offsetMs) {
   clearAdvance(zoneId);
+  if (!durationMs || durationMs <= 0) return; // duration 未知时不自动 advance，由前端 onended 或 admin 手动切
   const remain = durationMs - offsetMs - (Date.now() - startServerTime);
   if (remain <= 0) return;
   zoneState(zoneId).advanceTimer = setTimeout(() => next(zoneId), remain + 200);
