@@ -4,7 +4,7 @@ import { resolve, extname, dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { db } from "./db.mjs";
 import { findAdminByUsername, verifyPassword, createSession, getSession, destroySession, adminCount } from "./auth.mjs";
-import { handleUpgrade, hub } from "./ws.mjs";
+import { handleUpgrade, hub, STALE_MS, SWEEP_INTERVAL_MS } from "./ws.mjs";
 import {
   setHub, snapshot, play, pause, resume, stop, seek, next,
   enqueue, clearQueue, setQueue,
@@ -455,4 +455,9 @@ server.listen(PORT, HOST, () => {
   if (adminCount() === 0) {
     console.log("⚠️  尚未创建管理员，请先运行: node server/init-admin.mjs admin yourpass");
   }
+  // 定期清理僵尸 WS 连接（TCP 断了但服务端未收到 close 的情况）
+  setInterval(() => {
+    const n = hub.sweep(STALE_MS);
+    if (n > 0) console.log(`[sweep] 清理 ${n} 个僵尸连接（>${STALE_MS}ms 未活动）`);
+  }, SWEEP_INTERVAL_MS).unref();
 });

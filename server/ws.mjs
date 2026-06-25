@@ -4,6 +4,10 @@ import { snapshot } from "./scheduler.mjs";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const DEFAULT_ZONE = 1;
+// 连接空闲超时（毫秒）：超过此时长未收到任何 WS 帧视为僵尸
+export const STALE_MS = 30000;
+// 定期扫描间隔
+export const SWEEP_INTERVAL_MS = 5000;
 
 export function isWebSocketUpgrade(req) {
   return (
@@ -43,8 +47,10 @@ class WSConn {
     this.handlers = { message: [], close: [] };
     this.deviceId = null;
     this.zoneId = DEFAULT_ZONE;
+    this.lastSeenAt = Date.now();
 
     socket.on("data", (chunk) => {
+      this.lastSeenAt = Date.now();
       this.buffer = Buffer.concat([this.buffer, chunk]);
       this.parse();
     });
@@ -143,6 +149,20 @@ class Hub {
 
   detach(conn) {
     for (const [id, entry] of this.conns) if (entry.conn === conn) this.conns.delete(id);
+  }
+
+  // 关闭超过 staleMs 未活动的连接，调用方需 setInterval
+  sweep(staleMs) {
+    const now = Date.now();
+    let killed = 0;
+    for (const entry of this.conns.values()) {
+      if (now - entry.conn.lastSeenAt > staleMs) {
+        try { entry.conn.close(4002); } catch {}
+        this.detach(entry.conn);
+        killed++;
+      }
+    }
+    return killed;
   }
 
   disconnect(deviceId) {

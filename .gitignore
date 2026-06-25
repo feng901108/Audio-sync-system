@@ -6,6 +6,7 @@ data/app.db-*
 data/server.log
 dist/
 web/dist/
+.chrome-data/
 .DS_Store
 *.log
 .env
