@@ -1,6 +1,6 @@
 import { db } from "./db.mjs";
 
-const PRELOAD_MS = 800;
+const PRELOAD_MS = 1500;
 const DEFAULT_ZONE = 1;
 
 let _hub = null;
