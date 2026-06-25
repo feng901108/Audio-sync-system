@@ -235,7 +235,9 @@ export class SyncClient {
 
     const abs = Math.abs(driftMs);
     if (abs >= 200) {
-      this._startTrack(this.currentTrackId, this.currentTrackUrl, this.currentDurationMs, this.startServerTime, Math.max(0, Math.round(expectedSec * 1000)));
+      // 重置 startServerTime 为当前服务器时间，避免 expectedSec 公式里 trackOffsetMs 与 elapsed 双重计算
+      const serverNow = this._serverNow();
+      this._startTrack(this.currentTrackId, this.currentTrackUrl, this.currentDurationMs, serverNow, Math.max(0, Math.round(expectedSec * 1000)));
       return;
     }
     if (abs >= 30 && this.currentSource.playbackRate) {

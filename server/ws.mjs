@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "./db.mjs";
-import { snapshot } from "./scheduler.mjs";
+import { snapshot, PRELOAD_MS } from "./scheduler.mjs";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const DEFAULT_ZONE = 1;
@@ -233,20 +233,24 @@ export function handleUpgrade(req, socket) {
       const reqZone = Number(msg.zoneId);
       const zoneId = Number.isInteger(reqZone) && reqZone > 0 ? reqZone : DEFAULT_ZONE;
       const dev = ensureDevice(msg.deviceId, msg.name, msg.kind ?? "web", zoneId);
+      conn.deviceId = dev.id;
       conn.zoneId = dev.zoneId ?? zoneId;
       hub.attach(dev.id, conn, conn.zoneId);
       conn.send({ type: "hello", deviceId: dev.id, zoneId: conn.zoneId, serverTime: Date.now() });
       conn.send({ type: "setVolume", volume: Number(dev.volume) });
       const snap = snapshot(conn.zoneId);
       if (snap.isPlaying && snap.track && snap.startServerTime) {
+        // 中途加入：计算此刻的投影位置，给新设备一个 fresh startServerTime
+        const newStart = Date.now() + PRELOAD_MS;
+        const projectedOffsetMs = snap.trackOffsetMs + Math.max(0, newStart - snap.startServerTime);
         conn.send({
           type: "play",
           zoneId: snap.zoneId,
           trackId: snap.track.id,
           trackUrl: snap.track.url,
           durationMs: snap.track.durationMs,
-          startServerTime: snap.startServerTime,
-          trackOffsetMs: snap.trackOffsetMs,
+          startServerTime: newStart,
+          trackOffsetMs: projectedOffsetMs,
         });
       }
       return;
