@@ -31,6 +31,12 @@ CREATE TABLE IF NOT EXISTS devices (
   zone_id INTEGER NOT NULL DEFAULT 1,
   last_seen_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS zones (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  builtin INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS playback_state (
   zone_id INTEGER PRIMARY KEY,
   track_id TEXT,
@@ -47,5 +53,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
+INSERT OR IGNORE INTO zones (id, name, builtin, created_at) VALUES (1, '默认分区', 1, 0);
 INSERT OR IGNORE INTO playback_state (zone_id, is_playing, updated_at) VALUES (1, 0, 0);
 `);
