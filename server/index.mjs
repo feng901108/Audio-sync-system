@@ -5,7 +5,11 @@ import { randomBytes } from "node:crypto";
 import { db } from "./db.mjs";
 import { findAdminByUsername, verifyPassword, createSession, getSession, destroySession, adminCount } from "./auth.mjs";
 import { handleUpgrade, hub } from "./ws.mjs";
-import { setHub, snapshot, play, pause, resume, stop, seek, next, enqueue, clearQueue, setQueue } from "./scheduler.mjs";
+import {
+  setHub, snapshot, play, pause, resume, stop, seek, next,
+  enqueue, clearQueue, setQueue,
+  listZones, getZone, createZone, renameZone, deleteZone, assignDeviceZone,
+} from "./scheduler.mjs";
 import { parseMultipart } from "./multipart.mjs";
 import { probeAudioDuration } from "./audio-probe.mjs";
 
@@ -207,7 +211,7 @@ route("GET", "/api/devices", async (_req, res) => {
     devices: rows.map((d) => ({
       ...d,
       volume: Number(d.volume),
-      zone_id: Number(d.zone_id),
+      zone_id: d.zone_id == null ? null : Number(d.zone_id),
       last_seen_at: Number(d.last_seen_at),
       online: online.has(d.id),
     })),
@@ -217,12 +221,21 @@ route("GET", "/api/devices", async (_req, res) => {
 route("PATCH", "/api/devices/:id", async (req, res, params) => {
   const row = db.prepare("SELECT * FROM devices WHERE id = ?").get(params.id);
   if (!row) return sendJson(res, 404, { error: "设备不存在" });
-  const { name, volume } = await readJson(req);
+  const { name, volume, zoneId } = await readJson(req);
   if (name !== undefined) db.prepare("UPDATE devices SET name = ? WHERE id = ?").run(name, params.id);
   if (volume !== undefined) {
     const v = Math.max(0, Math.min(1, Number(volume)));
     db.prepare("UPDATE devices SET volume = ? WHERE id = ?").run(v, params.id);
     hub.sendTo(params.id, { type: "setVolume", volume: v });
+  }
+  if (zoneId !== undefined) {
+    if (zoneId === null) {
+      db.prepare("UPDATE devices SET zone_id = NULL WHERE id = ?").run(params.id);
+      hub.setDeviceZone(params.id, 0); // 0 表示"未分区"，Hub 不向其广播
+    } else {
+      const r = assignDeviceZone(params.id, Number(zoneId));
+      if (!r.ok) return sendJson(res, 400, { error: r.error });
+    }
   }
   sendJson(res, 200, { ok: true });
 }, { requireAuth: true });
@@ -233,32 +246,146 @@ route("DELETE", "/api/devices/:id", async (_req, res, params) => {
   sendJson(res, 200, { ok: true });
 }, { requireAuth: true });
 
-route("GET", "/api/playback", async (_req, res) => sendJson(res, 200, snapshot()));
+// === 旧路径（过渡）：内部转调 zone=1 ===
+route("GET", "/api/playback", async (_req, res) => sendJson(res, 200, snapshot(1)));
 route("POST", "/api/playback/play", async (req, res) => {
   const { trackId, offsetMs } = await readJson(req);
   if (!trackId) return sendJson(res, 400, { error: "缺少 trackId" });
-  sendJson(res, 200, play(trackId, Number(offsetMs ?? 0)));
+  sendJson(res, 200, play(1, trackId, Number(offsetMs ?? 0)));
 }, { requireAuth: true });
-route("POST", "/api/playback/pause", async (_req, res) => sendJson(res, 200, pause()), { requireAuth: true });
-route("POST", "/api/playback/resume", async (_req, res) => sendJson(res, 200, resume()), { requireAuth: true });
-route("POST", "/api/playback/stop", async (_req, res) => sendJson(res, 200, stop()), { requireAuth: true });
-route("POST", "/api/playback/next", async (_req, res) => sendJson(res, 200, next()), { requireAuth: true });
+route("POST", "/api/playback/pause", async (_req, res) => sendJson(res, 200, pause(1)), { requireAuth: true });
+route("POST", "/api/playback/resume", async (_req, res) => sendJson(res, 200, resume(1)), { requireAuth: true });
+route("POST", "/api/playback/stop", async (_req, res) => sendJson(res, 200, stop(1)), { requireAuth: true });
+route("POST", "/api/playback/next", async (_req, res) => sendJson(res, 200, next(1)), { requireAuth: true });
 route("POST", "/api/playback/seek", async (req, res) => {
   const { offsetMs } = await readJson(req);
-  sendJson(res, 200, seek(Number(offsetMs ?? 0)));
+  sendJson(res, 200, seek(1, Number(offsetMs ?? 0)));
 }, { requireAuth: true });
 route("POST", "/api/queue/enqueue", async (req, res) => {
   const { trackIds } = await readJson(req);
   if (!Array.isArray(trackIds) || trackIds.length === 0) return sendJson(res, 400, { error: "trackIds 必须是非空数组" });
-  sendJson(res, 200, enqueue(trackIds));
+  sendJson(res, 200, enqueue(1, trackIds));
 }, { requireAuth: true });
 route("POST", "/api/queue/replace", async (req, res) => {
   const { trackIds } = await readJson(req);
   if (!Array.isArray(trackIds)) return sendJson(res, 400, { error: "trackIds 必须是数组" });
-  setQueue(trackIds);
+  setQueue(1, trackIds);
   sendJson(res, 200, { ok: true });
 }, { requireAuth: true });
-route("POST", "/api/queue/clear", async (_req, res) => sendJson(res, 200, clearQueue()), { requireAuth: true });
+route("POST", "/api/queue/clear", async (_req, res) => sendJson(res, 200, clearQueue(1)), { requireAuth: true });
+
+// === Zone 管理（全局资源） ===
+route("GET", "/api/zones", async (_req, res) => {
+  const zones = listZones();
+  const enriched = zones.map((z) => ({ ...z, snapshot: snapshot(z.id) }));
+  sendJson(res, 200, { zones: enriched });
+});
+route("POST", "/api/zones", async (req, res) => {
+  const { name } = await readJson(req);
+  const r = createZone(name);
+  if (!r.ok) return sendJson(res, 400, r);
+  sendJson(res, 200, r);
+}, { requireAuth: true });
+route("PATCH", "/api/zones/:id", async (req, res, params) => {
+  const { name } = await readJson(req);
+  const r = renameZone(Number(params.id), name);
+  if (!r.ok) return sendJson(res, r.error === "分区不存在" ? 404 : 400, r);
+  sendJson(res, 200, r);
+}, { requireAuth: true });
+route("DELETE", "/api/zones/:id", async (req, res, params) => {
+  const r = deleteZone(Number(params.id));
+  if (!r.ok) return sendJson(res, r.error === "分区不存在" ? 404 : 400, r);
+  sendJson(res, 200, r);
+}, { requireAuth: true });
+
+// === Zone 内 playback / queue / devices（路径化） ===
+function parseZoneId(params) {
+  const n = Number(params.zoneId);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  return n;
+}
+
+route("GET", "/api/zones/:zoneId/snapshot", async (_req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  sendJson(res, 200, snapshot(zid));
+});
+route("GET", "/api/zones/:zoneId/devices", async (_req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  const rows = db.prepare("SELECT * FROM devices WHERE zone_id = ? ORDER BY last_seen_at DESC").all(zid);
+  const online = new Set(hub.onlineDeviceIdsInZone(zid));
+  sendJson(res, 200, {
+    devices: rows.map((d) => ({
+      ...d, volume: Number(d.volume), zone_id: Number(d.zone_id),
+      last_seen_at: Number(d.last_seen_at), online: online.has(d.id),
+    })),
+  });
+});
+route("POST", "/api/zones/:zoneId/playback/play", async (req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  const { trackId, offsetMs } = await readJson(req);
+  if (!trackId) return sendJson(res, 400, { error: "缺少 trackId" });
+  sendJson(res, 200, play(zid, trackId, Number(offsetMs ?? 0)));
+}, { requireAuth: true });
+route("POST", "/api/zones/:zoneId/playback/pause", async (_req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  sendJson(res, 200, pause(zid));
+}, { requireAuth: true });
+route("POST", "/api/zones/:zoneId/playback/resume", async (_req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  sendJson(res, 200, resume(zid));
+}, { requireAuth: true });
+route("POST", "/api/zones/:zoneId/playback/stop", async (_req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  sendJson(res, 200, stop(zid));
+}, { requireAuth: true });
+route("POST", "/api/zones/:zoneId/playback/next", async (_req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  sendJson(res, 200, next(zid));
+}, { requireAuth: true });
+route("POST", "/api/zones/:zoneId/playback/seek", async (req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  const { offsetMs } = await readJson(req);
+  sendJson(res, 200, seek(zid, Number(offsetMs ?? 0)));
+}, { requireAuth: true });
+route("POST", "/api/zones/:zoneId/queue/enqueue", async (req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  const { trackIds } = await readJson(req);
+  if (!Array.isArray(trackIds) || trackIds.length === 0) return sendJson(res, 400, { error: "trackIds 必须是非空数组" });
+  sendJson(res, 200, enqueue(zid, trackIds));
+}, { requireAuth: true });
+route("POST", "/api/zones/:zoneId/queue/replace", async (req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  const { trackIds } = await readJson(req);
+  if (!Array.isArray(trackIds)) return sendJson(res, 400, { error: "trackIds 必须是数组" });
+  setQueue(zid, trackIds);
+  sendJson(res, 200, { ok: true });
+}, { requireAuth: true });
+route("POST", "/api/zones/:zoneId/queue/clear", async (_req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  sendJson(res, 200, clearQueue(zid));
+}, { requireAuth: true });
 
 function matchRoute(method, pathname) {
   for (const r of ROUTES) {

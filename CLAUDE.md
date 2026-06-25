@@ -132,32 +132,40 @@ curl http://localhost:3000/api/health
 
 ---
 
-## 7. 当前完成状态（首次基线）
+## 7. 当前完成状态
 
 > **基线时间**：2026-06-25（首次拉取 `a86d807 init: 聚光广播`）
+> **多分区完成**：2026-06-25（commit `6fc9adc` + `eb3941e` + `aa19fe8`）
 
-### ✅ 已实现（MVP 完整闭环）
+### ✅ 已实现
 
+- **多分区架构**：zones 表 + 默认分区（可改名不可删）+ admin 可手动增/改/删其他分区
+- **Zone 隔离调度**：每 zone 独立 playback_state、独立队列、独立 advanceTimer、独立快照
+- **Zone 隔离广播**：WS Hub 按 zoneId 广播；register 带 zoneId；conn 切换 zone 时立刻收新 zone 的 snapshot
+- **路径化 API**：`/api/zones[/:id]` 管理 + `/api/zones/:zoneId/...` 作用域；旧 `/api/playback/...` `/api/queue/...` 保留作 zone=1 过渡
+- **曲目全局共享**：tracks 表不分区，admin 上传一次所有 zone 都能选
+- **设备移动 zone**：`PATCH /api/devices/:id {zoneId}` + Hub 实时切换 + 重连保持
 - 服务端 HTTP 路由 + 静态托管（含 `/audio/*` Range 请求）
 - WebSocket 自实现 + Hub 消息分发（握手哈希、ping/pong、ping 后刷 `last_seen_at`）
 - 调度器状态机（play/pause/resume/stop/seek/next）+ 播放队列
 - SQLite 表 + 自管理 session + scrypt 密码
 - 管理员登录/登出/初始化
 - 音频上传（multipart，200MB 上限）、删除、时长探测（仅 MP3 准确）
-- 设备管理（在线状态、改名、调音量、移除）
+- 设备管理（在线状态、改名、调音量、移除、移动 zone）
 - 客户端 NTP 风格时钟同步 + 预约调度 + 漂移修正（±0.5% / 200ms seek）
-- 管理端 UI（曲库 / 队列 / 设备 三面板 + 1s 轮询）
-- 聆听端 UI（连接状态、漂移、RTT、时钟差、进度条、本机音量）
+- 客户端**两层音量**：master（服务端） × local（本机）= gain.value，admin 调音量不会覆盖用户本机拉杆
+- 管理端 UI：顶部 zone tabs + 分区管理弹窗 + 曲库/队列/设备三面板 + 2s 轮询
+- 聆听端 UI：连接状态、漂移、RTT、时钟差、进度条、本机音量、zone 选择下拉、zone 标签
 
-### ⚠️ 部分实现
+### ⚠️ 部分实现 / 已知缺陷
 
 - **时长探测**：仅 MP3 准确；M4A/AAC/OGG/WAV/FLAC 直接返回 0，前端用 `<audio>` metadata 兜底
-- **多设备音量**：`/api/devices/:id` PATCH 改 volume 同时 WS 推送 `setVolume`，但客户端 `_handle` 收到后无条件覆盖 `gain.gain.value`，**用户本机拉杆调整会被服务端下发覆盖**（除非本机与 admin 设置一致）
 - **session 失效**：只检查 `expires_at` 是否过期，没有主动续期；管理员长时间不操作会突然掉登录
+- **WS 僵尸连接无超时**：`Hub.conns` 只增不减，TCP 断了 `online` 仍为 `true`（`/api/devices` 的 online 字段用 `hub.onlineDeviceIds()` 判断，会显示僵尸设备在线；`/api/zones/:zoneId/devices` 同理）
+- **"未分区"设备**：admin 把设备 zoneId 设为 null 时，Hub 给其 `zoneId=0`，`broadcastToZone(0)` 不会命中任何订阅但 `sendTo` 单播仍能到（音量推送 OK）。设备不再收任何 play/pause 推送，需要重新分配 zone 才能听广播
 
 ### ❌ 缺口 / 后续
 
-- 单同步分区（`zone_id=1` 是硬编码常量，未做多分区）
 - 定时任务（上下班铃、夜间 BGM）—— 数据库无 cron 表，无调度器
 - mDNS 自动发现服务端
 - Android 原生客户端（Kotlin + ExoPlayer + Foreground Service）—— README "后续" 列出
@@ -167,23 +175,32 @@ curl http://localhost:3000/api/health
 - 队列拖拽排序（`/api/queue/replace` 存在但 UI 没暴露）
 - 没有测试用例（README 提到 multipart 单测过，但仓库里未见 test 目录）
 - 错误处理：上传 >200MB 直接抛错给前端，前端只 `alert` HTTP body
+- REST 错误码不规范：`play` 失败、`DELETE` 不存在返 200，应 4xx
+- 旧路径 `/api/playback/...` `/api/queue/...` 过渡：下次大版本删
 
 ### 📋 验收清单当前状态
 
-参见 `README.md` 第 60-70 行的 9 项验收清单。本机未端到端跑过（沙箱 `listen()` 被拒），需在 Mac/NUC 上 `npm run dev` 实际验证。
+参见 `README.md` 第 60-70 行的 9 项验收清单。**多分区版本**对应验收项需改为按 zone 验证：
+- 两个 zone 各有一个聆听标签，能听到各自的内容
+- admin 切换 zone tabs 不会影响其他 zone
+
+沙箱无法跑 `listen()`，本机需在浏览器实际验证人工项（同步相位差、长时漂移、跨 zone 隔离听觉感受）。
 
 ---
 
 ## 8. 待办（按优先级）
 
-1. **端到端验证 9 项验收清单**（高）
-2. 修复客户端"本机音量"被服务端下发覆盖的问题（中）
-3. 给曲目加元数据编辑（artist / 标题）UI（中）
-4. 队列拖拽排序 UI（低）
-5. 多分区架构（zone_id 抽象）（低，需要先想清楚产品形态）
+1. **本机浏览器端到端跑通**（高）：两个 zone tabs 切换、聆听端选 zone、跨 zone 隔离听觉
+2. WS 僵尸连接超时清理（中，hub 加 `lastSeenAt`，定期扫）
+3. REST 错误码规范化（中，play 失败 / DELETE 不存在 改 4xx）
+4. 给曲目加元数据编辑（artist / 标题）UI（中）
+5. 队列拖拽排序 UI（低）
 6. 定时广播 / BGM 调度（低，独立大功能）
-7. 写测试用例（多帧 MP3 探测、WS 编解码、路由权限）（中）
-8. HTTPS + 鉴权代理（生产前必须）
+7. 删除旧路径 `/api/playback/...` `/api/queue/...`（低，下个大版本）
+8. 写测试用例（多帧 MP3 探测、WS 编解码、路由权限、zone 隔离 broadcastToZone）（中）
+9. HTTPS + 鉴权代理（生产前必须）
+10. Android 原生客户端（独立项目）
+11. mDNS 自动发现服务端（低）
 
 ---
 

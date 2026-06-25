@@ -20,11 +20,17 @@
   <section id="dashboard" hidden>
     <header class="topbar">
       <h2>聚光广播管理</h2>
-      <div><span id="who"></span><button id="logout-btn">登出</button></div>
+      <div>
+        <button id="zones-btn" class="ghost">分区管理</button>
+        <span id="who"></span>
+        <button id="logout-btn">登出</button>
+      </div>
     </header>
 
+    <nav id="zone-tabs" class="zone-tabs" aria-label="分区切换"></nav>
+
     <section class="now">
-      <h3>当前播放</h3>
+      <h3>当前播放 · <span id="zone-label">—</span></h3>
       <div class="now-info">
         <div id="now-title">—</div>
         <div class="now-controls">
@@ -42,7 +48,7 @@
 
     <section class="grid">
       <div class="panel">
-        <h3>曲库</h3>
+        <h3>曲库（全局共享）</h3>
         <form id="upload-form" class="upload">
           <input id="upload-file" type="file" accept="audio/*" />
           <button type="submit">上传</button>
@@ -50,16 +56,31 @@
         <ul id="track-list" class="list"></ul>
       </div>
       <div class="panel">
-        <h3>播放队列</h3>
+        <h3 id="queue-title">播放队列</h3>
         <ul id="queue-list" class="list"></ul>
         <button id="clear-queue">清空队列</button>
       </div>
       <div class="panel">
-        <h3>设备</h3>
+        <h3>本分区设备</h3>
         <ul id="device-list" class="list"></ul>
       </div>
     </section>
   </section>
+
+  <div id="zones-modal" class="modal" hidden>
+    <div class="modal-body">
+      <header class="modal-head">
+        <h3>分区管理</h3>
+        <button id="zones-close" class="ghost">×</button>
+      </header>
+      <ul id="zones-list" class="list"></ul>
+      <form id="zone-create-form" class="upload">
+        <input id="zone-new-name" placeholder="新分区名称" maxlength="32" />
+        <button type="submit">创建</button>
+      </form>
+      <p id="zones-err" class="err"></p>
+    </div>
+  </div>
 </main>
 <script type="module">
 const $ = (id) => document.getElementById(id);
@@ -78,6 +99,46 @@ async function api(path, init = {}) {
 }
 
 let tracks = [];
+let zones = [];
+let currentZoneId = null;
+let currentZoneName = "";
+
+async function refreshZones() {
+  const r = await api("/api/zones");
+  zones = r.zones;
+  renderZoneTabs();
+  if (currentZoneId == null) {
+    if (zones.length > 0) switchZone(zones[0].id);
+  } else if (!zones.find((z) => z.id === currentZoneId)) {
+    switchZone(zones[0]?.id ?? null);
+  } else {
+    renderZoneTabs();
+  }
+}
+
+function renderZoneTabs() {
+  const ul = $("zone-tabs");
+  ul.innerHTML = "";
+  for (const z of zones) {
+    const b = document.createElement("button");
+    b.className = "zone-tab" + (z.id === currentZoneId ? " active" : "");
+    b.textContent = z.name + (z.builtin ? "" : "");
+    b.title = z.builtin ? "默认分区" : "分区 #" + z.id;
+    b.onclick = () => switchZone(z.id);
+    ul.appendChild(b);
+  }
+}
+
+function switchZone(zoneId) {
+  currentZoneId = zoneId;
+  const z = zones.find((x) => x.id === zoneId);
+  currentZoneName = z?.name ?? "";
+  $("zone-label").textContent = currentZoneName || "—";
+  $("queue-title").textContent = `播放队列（${currentZoneName || "—"})`;
+  renderZoneTabs();
+  refreshPlayback();
+  refreshZoneDevices();
+}
 
 async function refreshTracks() {
   const r = await api("/api/tracks");
@@ -93,12 +154,13 @@ async function refreshTracks() {
       </div>`;
     li.querySelector("b").textContent = t.title;
     li.querySelector("small").textContent = t.artist ?? "";
+    const zonePath = currentZoneId ? `/api/zones/${currentZoneId}` : "/api/zones/1";
     li.querySelector('[data-act="play"]').addEventListener("click", async () => {
-      await api("/api/playback/play", { method: "POST", json: { trackId: t.id } });
+      await api(`${zonePath}/playback/play`, { method: "POST", json: { trackId: t.id } });
       await refreshPlayback();
     });
     li.querySelector('[data-act="enqueue"]').addEventListener("click", async () => {
-      await api("/api/queue/enqueue", { method: "POST", json: { trackIds: [t.id] } });
+      await api(`${zonePath}/queue/enqueue`, { method: "POST", json: { trackIds: [t.id] } });
       await refreshPlayback();
     });
     li.querySelector('[data-act="del"]').addEventListener("click", async () => {
@@ -110,17 +172,22 @@ async function refreshTracks() {
   }
 }
 
-async function refreshDevices() {
-  const r = await api("/api/devices");
+async function refreshZoneDevices() {
+  if (currentZoneId == null) return;
+  const r = await api(`/api/zones/${currentZoneId}/devices`);
   const ul = $("device-list");
   ul.innerHTML = "";
+  if (r.devices.length === 0) {
+    ul.innerHTML = '<li class="empty">本分区暂无设备</li>';
+    return;
+  }
   for (const d of r.devices) {
     const li = document.createElement("li");
     li.innerHTML = `<div><span class="dot ${d.online ? "ok" : ""}"></span><b class="dname"></b><small></small></div>
       <div class="row-actions">
         <input type="range" min="0" max="1" step="0.01" value="${d.volume}" />
         <span class="vol-val">${Math.round(d.volume * 100)}%</span>
-        <button data-act="rename">改名</button><button data-act="remove">移除</button>
+        <button data-act="remove">移除</button>
       </div>`;
     li.querySelector(".dname").textContent = d.name;
     li.querySelector("small").textContent = ` ${d.kind} · ${d.id.slice(0, 6)}`;
@@ -130,22 +197,18 @@ async function refreshDevices() {
     range.addEventListener("change", async () => {
       await api(`/api/devices/${d.id}`, { method: "PATCH", json: { volume: Number(range.value) } });
     });
-    li.querySelector('[data-act="rename"]').addEventListener("click", async () => {
-      const name = prompt("新名字", d.name); if (!name) return;
-      await api(`/api/devices/${d.id}`, { method: "PATCH", json: { name } });
-      await refreshDevices();
-    });
     li.querySelector('[data-act="remove"]').addEventListener("click", async () => {
       if (!confirm(`移除 ${d.name}？`)) return;
       await api(`/api/devices/${d.id}`, { method: "DELETE" });
-      await refreshDevices();
+      await refreshZoneDevices();
     });
     ul.appendChild(li);
   }
 }
 
 async function refreshPlayback() {
-  const s = await api("/api/playback");
+  if (currentZoneId == null) return;
+  const s = await api(`/api/zones/${currentZoneId}/snapshot`);
   $("now-title").textContent = s.track ? `${s.track.title}${s.track.artist ? " — " + s.track.artist : ""}` : "—";
   const pos = s.isPlaying && s.startServerTime ? s.trackOffsetMs + (s.serverTime - s.startServerTime) : s.trackOffsetMs;
   $("now-pos").textContent = String(Math.max(0, Math.round(pos)));
@@ -162,16 +225,73 @@ async function refreshPlayback() {
   });
 }
 
+function bindZoneControls() {
+  $("btn-pause").onclick = async () => { await api(`/api/zones/${currentZoneId}/playback/pause`, { method: "POST" }); refreshPlayback(); };
+  $("btn-resume").onclick = async () => { await api(`/api/zones/${currentZoneId}/playback/resume`, { method: "POST" }); refreshPlayback(); };
+  $("btn-next").onclick = async () => { await api(`/api/zones/${currentZoneId}/playback/next`, { method: "POST" }); refreshPlayback(); };
+  $("btn-stop").onclick = async () => { await api(`/api/zones/${currentZoneId}/playback/stop`, { method: "POST" }); refreshPlayback(); };
+  $("clear-queue").onclick = async () => { await api(`/api/zones/${currentZoneId}/queue/clear`, { method: "POST" }); refreshPlayback(); };
+}
+
+function openZonesModal() {
+  renderZonesModal();
+  $("zones-modal").hidden = false;
+}
+function closeZonesModal() { $("zones-modal").hidden = true; $("zones-err").textContent = ""; }
+
+function renderZonesModal() {
+  const ul = $("zones-list");
+  ul.innerHTML = "";
+  for (const z of zones) {
+    const li = document.createElement("li");
+    li.innerHTML = `<div><b></b><small></small></div>
+      <div class="row-actions">
+        <button data-act="rename">改名</button>
+        <button data-act="del" ${z.builtin ? "disabled" : ""}>删除</button>
+      </div>`;
+    li.querySelector("b").textContent = z.name + (z.builtin ? " (默认)" : "");
+    li.querySelector("small").textContent = `#${z.id} · ${z.builtin ? "内置" : "可管理"}`;
+    li.querySelector('[data-act="rename"]').addEventListener("click", async () => {
+      const name = prompt("新名字", z.name);
+      if (!name) return;
+      try { await api(`/api/zones/${z.id}`, { method: "PATCH", json: { name } }); }
+      catch (e) { $("zones-err").textContent = e.message; return; }
+      await refreshZones();
+      renderZonesModal();
+    });
+    li.querySelector('[data-act="del"]').addEventListener("click", async () => {
+      if (!confirm(`删除分区「${z.name}」？该分区的设备将变为"未分区"。`)) return;
+      try { await api(`/api/zones/${z.id}`, { method: "DELETE" }); }
+      catch (e) { $("zones-err").textContent = e.message; return; }
+      await refreshZones();
+      renderZonesModal();
+    });
+    ul.appendChild(li);
+  }
+}
+
 async function bootDashboard() {
   $("login").hidden = true;
   $("dashboard").hidden = false;
+  bindZoneControls();
 
-  $("btn-pause").onclick = async () => { await api("/api/playback/pause", { method: "POST" }); refreshPlayback(); };
-  $("btn-resume").onclick = async () => { await api("/api/playback/resume", { method: "POST" }); refreshPlayback(); };
-  $("btn-next").onclick = async () => { await api("/api/playback/next", { method: "POST" }); refreshPlayback(); };
-  $("btn-stop").onclick = async () => { await api("/api/playback/stop", { method: "POST" }); refreshPlayback(); };
-  $("clear-queue").onclick = async () => { await api("/api/queue/clear", { method: "POST" }); refreshPlayback(); };
   $("logout-btn").onclick = async () => { await api("/api/auth/logout", { method: "POST" }); location.reload(); };
+  $("zones-btn").onclick = openZonesModal;
+  $("zones-close").onclick = closeZonesModal;
+  $("zones-modal").addEventListener("click", (e) => { if (e.target.id === "zones-modal") closeZonesModal(); });
+
+  $("zone-create-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const name = $("zone-new-name").value.trim();
+    if (!name) return;
+    try {
+      const r = await api("/api/zones", { method: "POST", json: { name } });
+      $("zone-new-name").value = "";
+      await refreshZones();
+      switchZone(r.zone.id);
+      renderZonesModal();
+    } catch (e) { $("zones-err").textContent = e.message; }
+  });
 
   $("upload-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -184,10 +304,8 @@ async function bootDashboard() {
   });
 
   await refreshTracks();
-  await refreshDevices();
-  await refreshPlayback();
-  setInterval(refreshPlayback, 1000);
-  setInterval(refreshDevices, 3000);
+  await refreshZones();
+  setInterval(() => { refreshPlayback(); refreshZoneDevices(); }, 2000);
 }
 
 (async () => {

@@ -3,6 +3,7 @@ import { db } from "./db.mjs";
 import { snapshot } from "./scheduler.mjs";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const DEFAULT_ZONE = 1;
 
 export function isWebSocketUpgrade(req) {
   return (
@@ -41,6 +42,7 @@ class WSConn {
     this.buffer = Buffer.alloc(0);
     this.handlers = { message: [], close: [] };
     this.deviceId = null;
+    this.zoneId = DEFAULT_ZONE;
 
     socket.on("data", (chunk) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
@@ -130,34 +132,58 @@ class WSConn {
 }
 
 class Hub {
-  constructor() { this.conns = new Map(); }
+  constructor() { this.conns = new Map(); } // deviceId -> { conn, zoneId }
 
-  attach(deviceId, conn) {
+  attach(deviceId, conn, zoneId) {
     const existing = this.conns.get(deviceId);
-    if (existing && existing !== conn) existing.close(4000);
-    this.conns.set(deviceId, conn);
+    if (existing && existing.conn !== conn) existing.conn.close(4000);
+    this.conns.set(deviceId, { conn, zoneId });
+    conn.zoneId = zoneId;
   }
 
   detach(conn) {
-    for (const [id, c] of this.conns) if (c === conn) this.conns.delete(id);
+    for (const [id, entry] of this.conns) if (entry.conn === conn) this.conns.delete(id);
   }
 
   disconnect(deviceId) {
-    const c = this.conns.get(deviceId);
-    if (c) { c.close(4001); this.conns.delete(deviceId); }
+    const e = this.conns.get(deviceId);
+    if (e) { e.conn.close(4001); this.conns.delete(deviceId); }
+  }
+
+  onlineDeviceIdsInZone(zoneId) {
+    const out = [];
+    for (const [id, e] of this.conns) if (e.zoneId === zoneId) out.push(id);
+    return out;
   }
 
   onlineDeviceIds() { return Array.from(this.conns.keys()); }
 
-  sendTo(deviceId, msg) {
-    const c = this.conns.get(deviceId);
-    if (!c) return false;
-    return c.send(msg);
+  setDeviceZone(deviceId, zoneId) {
+    const e = this.conns.get(deviceId);
+    if (!e) return false;
+    e.zoneId = zoneId;
+    e.conn.zoneId = zoneId;
+    return true;
   }
 
+  sendTo(deviceId, msg) {
+    const e = this.conns.get(deviceId);
+    if (!e) return false;
+    return e.conn.send(msg);
+  }
+
+  broadcastToZone(zoneId, msg) {
+    let n = 0;
+    for (const e of this.conns.values()) {
+      if (e.zoneId === zoneId && e.conn.send(msg)) n++;
+    }
+    return n;
+  }
+
+  // 保留旧 API 兼容（当前代码未使用，供可能的日志/监控调用）
   broadcast(msg) {
     let n = 0;
-    for (const c of this.conns.values()) if (c.send(msg)) n++;
+    for (const e of this.conns.values()) if (e.conn.send(msg)) n++;
     return n;
   }
 }
@@ -184,15 +210,18 @@ export function handleUpgrade(req, socket) {
 
   conn.on("message", (msg) => {
     if (msg.type === "register") {
-      const dev = ensureDevice(msg.deviceId, msg.name, msg.kind ?? "web");
-      conn.deviceId = dev.id;
-      hub.attach(dev.id, conn);
-      conn.send({ type: "hello", deviceId: dev.id, serverTime: Date.now() });
+      const reqZone = Number(msg.zoneId);
+      const zoneId = Number.isInteger(reqZone) && reqZone > 0 ? reqZone : DEFAULT_ZONE;
+      const dev = ensureDevice(msg.deviceId, msg.name, msg.kind ?? "web", zoneId);
+      conn.zoneId = dev.zoneId ?? zoneId;
+      hub.attach(dev.id, conn, conn.zoneId);
+      conn.send({ type: "hello", deviceId: dev.id, zoneId: conn.zoneId, serverTime: Date.now() });
       conn.send({ type: "setVolume", volume: Number(dev.volume) });
-      const snap = snapshot();
+      const snap = snapshot(conn.zoneId);
       if (snap.isPlaying && snap.track && snap.startServerTime) {
         conn.send({
           type: "play",
+          zoneId: snap.zoneId,
           trackId: snap.track.id,
           trackUrl: snap.track.url,
           durationMs: snap.track.durationMs,
@@ -215,22 +244,23 @@ export function handleUpgrade(req, socket) {
   conn.on("close", () => hub.detach(conn));
 }
 
-function ensureDevice(deviceId, name, kind) {
+function ensureDevice(deviceId, name, kind, zoneId) {
   const id = deviceId && deviceId.length > 0 ? deviceId : randomBytes(5).toString("hex");
   const now = Date.now();
   const existing = db.prepare("SELECT * FROM devices WHERE id = ?").get(id);
   if (existing) {
-    db.prepare("UPDATE devices SET last_seen_at = ?, kind = ? WHERE id = ?")
-      .run(now, kind, id);
+    db.prepare("UPDATE devices SET last_seen_at = ?, kind = ?, zone_id = COALESCE(zone_id, ?) WHERE id = ?")
+      .run(now, kind, zoneId, id);
     if (name && name !== existing.name) {
       db.prepare("UPDATE devices SET name = ? WHERE id = ?").run(name, id);
       existing.name = name;
     }
+    if (!existing.zone_id) existing.zone_id = zoneId;
     return existing;
   }
   const finalName = name ?? `${kind}-${id.slice(0, 4)}`;
   db.prepare(
-    "INSERT INTO devices (id, name, kind, volume, zone_id, last_seen_at) VALUES (?, ?, ?, 1.0, 1, ?)",
-  ).run(id, finalName, kind, now);
-  return { id, name: finalName, kind, volume: 1.0, zone_id: 1, last_seen_at: now };
+    "INSERT INTO devices (id, name, kind, volume, zone_id, last_seen_at) VALUES (?, ?, ?, 1.0, ?, ?)",
+  ).run(id, finalName, kind, zoneId, now);
+  return { id, name: finalName, kind, volume: 1.0, zone_id: zoneId, last_seen_at: now };
 }
