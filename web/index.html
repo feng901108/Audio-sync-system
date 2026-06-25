@@ -12,11 +12,13 @@
     <h1>聚光广播</h1>
     <p>点击下方按钮加入广播。请保持页面前台。</p>
     <input id="device-name" placeholder="给这台设备起个名字" />
+    <select id="zone-select" aria-label="选择分区"></select>
     <button id="join-btn">加入广播</button>
   </section>
   <section id="player" hidden>
     <div class="now-playing">
       <div class="title" id="title">等待广播…</div>
+      <div class="zone-tag" id="zone-tag"></div>
     </div>
     <div class="progress">
       <span id="position">0:00</span>
@@ -45,13 +47,46 @@ const fmt = (ms) => {
 const savedName = localStorage.getItem("juguang.deviceName") ?? "";
 $("device-name").value = savedName || `Web-${Math.random().toString(36).slice(2, 6)}`;
 
+async function loadZones() {
+  let zones = [];
+  try {
+    const r = await fetch("/api/zones");
+    const j = await r.json();
+    zones = j.zones || [];
+  } catch {}
+  const sel = $("zone-select");
+  sel.innerHTML = "";
+  if (zones.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "1"; opt.textContent = "默认分区";
+    sel.appendChild(opt);
+  } else {
+    for (const z of zones) {
+      const opt = document.createElement("option");
+      opt.value = String(z.id);
+      opt.textContent = z.name;
+      sel.appendChild(opt);
+    }
+  }
+  const saved = Number(localStorage.getItem("juguang.zoneId") ?? 1);
+  sel.value = String(zones.find((z) => z.id === saved) ? saved : (zones[0]?.id ?? 1));
+  return { zones, selectedId: Number(sel.value) };
+}
+
+let currentZoneName = "";
+
 $("join-btn").addEventListener("click", async () => {
   const name = $("device-name").value.trim() || "Web";
+  const zoneId = Number($("zone-select").value) || 1;
+  const selName = $("zone-select").selectedOptions[0]?.textContent ?? "";
+  currentZoneName = selName;
   localStorage.setItem("juguang.deviceName", name);
-  const client = new SyncClient(name, "web");
+  localStorage.setItem("juguang.zoneId", String(zoneId));
+  const client = new SyncClient(name, "web", zoneId);
   await client.connect();
   $("join").hidden = true;
   $("player").hidden = false;
+  $("zone-tag").textContent = currentZoneName;
   $("vol").addEventListener("input", () => client.setLocalVolume(Number($("vol").value)));
   client.on((s) => {
     $("title").textContent = s.trackTitle ?? (s.isPlaying ? "播放中" : "等待广播…");
@@ -67,6 +102,8 @@ $("join-btn").addEventListener("click", async () => {
   });
   if ("wakeLock" in navigator) { try { await navigator.wakeLock.request("screen"); } catch {} }
 });
+
+loadZones();
 </script>
 </body>
 </html>

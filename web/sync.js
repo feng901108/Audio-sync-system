@@ -4,9 +4,10 @@ const RATE_TWEAK = 0.005;
 const RATE_LIMIT_MS = 200;
 
 export class SyncClient {
-  constructor(deviceName, kind = "web") {
+  constructor(deviceName, kind = "web", zoneId = 1) {
     this.deviceName = deviceName;
     this.kind = kind;
+    this.zoneId = Number(zoneId) || 1;
     this.deviceId = localStorage.getItem("juguang.deviceId");
     this.ws = null;
     this.ctx = null;
@@ -32,6 +33,7 @@ export class SyncClient {
       deviceId: null, connected: false, clockOffsetMs: 0, rttMs: 0,
       trackTitle: null, positionMs: 0, durationMs: 0,
       isPlaying: false, driftMs: 0, volume: 1, localVolume: 1,
+      zoneId: this.zoneId, zoneName: null,
     };
   }
 
@@ -60,6 +62,7 @@ export class SyncClient {
         deviceId: this.deviceId ?? undefined,
         name: this.deviceName,
         kind: this.kind,
+        zoneId: this.zoneId,
       }));
       this._startPing();
       this._startDrift();
@@ -113,8 +116,12 @@ export class SyncClient {
       }
       case "hello":
         this.deviceId = msg.deviceId;
+        if (msg.zoneId) {
+          this.zoneId = msg.zoneId;
+          this.status.zoneId = msg.zoneId;
+        }
         localStorage.setItem("juguang.deviceId", msg.deviceId);
-        this._update({ deviceId: msg.deviceId });
+        this._update({ deviceId: msg.deviceId, zoneId: this.zoneId });
         return;
       case "play":
       case "seek":

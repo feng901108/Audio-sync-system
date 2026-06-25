@@ -3,13 +3,18 @@
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 button{background:var(--panel);border:1px solid var(--line);color:var(--text);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:14px}
 button:hover{border-color:var(--accent)}
+button.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+button.ghost:hover{color:var(--text);border-color:var(--line)}
+button:disabled{opacity:.4;cursor:not-allowed}
 input[type="text"],input[type="password"],input:not([type]){background:var(--panel);border:1px solid var(--line);color:var(--text);padding:10px 12px;border-radius:6px;font-size:14px}
+select{background:var(--panel);border:1px solid var(--line);color:var(--text);padding:10px 12px;border-radius:6px;font-size:14px;font-family:inherit}
 input[type="range"]{width:120px}
 .player-page #app{max-width:480px;margin:60px auto;padding:0 20px}
 .join{text-align:center;display:flex;flex-direction:column;gap:14px}
 .join h1{margin:0;font-size:28px;letter-spacing:2px}
 .join p{color:var(--muted);margin:0}
 .join button{margin-top:10px;padding:16px;font-size:18px;background:var(--accent);border-color:var(--accent);color:white}
+.zone-tag{display:inline-block;margin-top:8px;padding:3px 10px;border-radius:10px;background:var(--panel);border:1px solid var(--line);color:var(--muted);font-size:12px}
 .now-playing{text-align:center;margin:30px 0}
 .now-playing .title{font-size:22px;font-weight:600}
 .progress{display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted)}
@@ -28,9 +33,21 @@ input[type="range"]{width:120px}
 .login .err{color:var(--err);margin:0;min-height:16px}
 .login .hint{font-size:12px;color:var(--muted);margin:0}
 .login code{background:var(--bg);padding:2px 6px;border-radius:4px}
-.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--line)}
 .topbar h2{margin:0}
 .topbar #who{color:var(--muted);margin-right:12px}
+.zone-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.zone-tab{background:transparent;border:1px solid transparent;color:var(--muted);padding:6px 14px;border-radius:6px;font-size:13px}
+.zone-tab:hover{color:var(--text);border-color:var(--line)}
+.zone-tab.active{background:var(--panel);border-color:var(--accent);color:var(--text)}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:50}
+.modal[hidden]{display:none}
+.modal-body{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;width:480px;max-width:90vw;max-height:80vh;overflow:auto}
+.modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.modal-head h3{margin:0;font-size:16px}
+.modal-body .upload{margin-top:16px}
+.modal-body .err{color:var(--err);font-size:12px;margin:8px 0 0;min-height:16px}
+.list li.empty{justify-content:center;color:var(--muted);font-size:12px;padding:20px}
 .now{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin-bottom:20px}
 .now h3{margin:0 0 12px;font-size:14px;color:var(--muted);font-weight:normal}
 .now-info{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
