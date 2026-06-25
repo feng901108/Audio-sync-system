@@ -194,12 +194,16 @@ export function deleteZone(zoneId) {
   const z = getZone(zoneId);
   if (!z) return { ok: false, error: "分区不存在" };
   if (z.builtin) return { ok: false, error: "默认分区不可删除" };
-  const tx = db.transaction(() => {
+  db.exec("BEGIN");
+  try {
     db.prepare("DELETE FROM playback_state WHERE zone_id = ?").run(zoneId);
     db.prepare("UPDATE devices SET zone_id = NULL WHERE zone_id = ?").run(zoneId);
     db.prepare("DELETE FROM zones WHERE id = ?").run(zoneId);
-  });
-  tx();
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
   clearAdvance(zoneId);
   zones.delete(zoneId);
   return { ok: true };
