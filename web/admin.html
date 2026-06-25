@@ -26,6 +26,7 @@
         <button id="logout-btn">登出</button>
       </div>
     </header>
+    <div id="server-addrs" class="server-addrs"></div>
 
     <nav id="zone-tabs" class="zone-tabs" aria-label="分区切换"></nav>
 
@@ -190,7 +191,7 @@ async function refreshZoneDevices() {
         <button data-act="remove">移除</button>
       </div>`;
     li.querySelector(".dname").textContent = d.name;
-    li.querySelector("small").textContent = ` ${d.kind} · ${d.id.slice(0, 6)}`;
+    li.querySelector("small").textContent = ` ${d.kind} · ${d.id.slice(0, 6)}${d.ip ? " · " + d.ip : ""}`;
     const range = li.querySelector("input");
     const valEl = li.querySelector(".vol-val");
     range.addEventListener("input", () => { valEl.textContent = `${Math.round(Number(range.value) * 100)}%`; });
@@ -270,10 +271,22 @@ function renderZonesModal() {
   }
 }
 
+async function loadServerAddrs() {
+  try {
+    const h = await api("/api/health");
+    if (h.serverIps?.length) {
+      $("server-addrs").innerHTML = "设备连接地址：" + h.serverIps.map((ip) =>
+        `<code>http://${ip.address}:${h.port}</code>`
+      ).join(" ");
+    }
+  } catch {}
+}
+
 async function bootDashboard() {
   $("login").hidden = true;
   $("dashboard").hidden = false;
   bindZoneControls();
+  loadServerAddrs();
 
   $("logout-btn").onclick = async () => { await api("/api/auth/logout", { method: "POST" }); location.reload(); };
   $("zones-btn").onclick = openZonesModal;

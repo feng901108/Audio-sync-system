@@ -12,11 +12,23 @@ import {
 } from "./scheduler.mjs";
 import { parseMultipart } from "./multipart.mjs";
 import { probeAudioDuration } from "./audio-probe.mjs";
+import { networkInterfaces } from "node:os";
 
 setHub(hub);
 
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? "0.0.0.0";
+
+function getServerIps() {
+  const nets = networkInterfaces();
+  const ips = [];
+  for (const name of Object.keys(nets)) {
+    for (const n of nets[name]) {
+      if (n.family === "IPv4" && !n.internal) ips.push({ iface: name, address: n.address });
+    }
+  }
+  return ips;
+}
 
 const ROOT = process.cwd();
 const AUDIO_DIR = resolve(ROOT, "data/audio");
@@ -165,7 +177,7 @@ route("GET", "/api/auth/me", async (req, res) => {
 });
 
 route("GET", "/api/health", async (_req, res) => {
-  sendJson(res, 200, { ok: true, serverTime: Date.now() });
+  sendJson(res, 200, { ok: true, serverTime: Date.now(), port: PORT, serverIps: getServerIps() });
 });
 
 route("GET", "/api/tracks", async (_req, res) => {
@@ -230,6 +242,7 @@ route("GET", "/api/devices", async (_req, res) => {
       zone_id: d.zone_id == null ? null : Number(d.zone_id),
       last_seen_at: Number(d.last_seen_at),
       online: online.has(d.id),
+      ip: hub.getDeviceIp(d.id),
     })),
   });
 });
@@ -333,6 +346,7 @@ route("GET", "/api/zones/:zoneId/devices", async (_req, res, params) => {
     devices: rows.map((d) => ({
       ...d, volume: Number(d.volume), zone_id: Number(d.zone_id),
       last_seen_at: Number(d.last_seen_at), online: online.has(d.id),
+      ip: hub.getDeviceIp(d.id),
     })),
   });
 });
