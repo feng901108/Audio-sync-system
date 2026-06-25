@@ -25,11 +25,19 @@ export class SyncClient {
     this.pingTimer = null;
     this.driftTimer = null;
     this.reconnectTimer = null;
+    // 两层音量：master 来自服务端下发（admin 调的），local 是用户本机拉杆（0-1 倍率）
+    this.masterVolume = 1;
+    this.localVolume = 1;
     this.status = {
       deviceId: null, connected: false, clockOffsetMs: 0, rttMs: 0,
       trackTitle: null, positionMs: 0, durationMs: 0,
-      isPlaying: false, driftMs: 0, volume: 1,
+      isPlaying: false, driftMs: 0, volume: 1, localVolume: 1,
     };
+  }
+
+  _applyVolume() {
+    if (!this.gain) return;
+    this.gain.gain.value = this.masterVolume * this.localVolume;
   }
 
   on(fn) { this.listeners.add(fn); fn(this.status); return () => this.listeners.delete(fn); }
@@ -126,8 +134,9 @@ export class SyncClient {
         this._update({ isPlaying: false, trackTitle: null, positionMs: 0, durationMs: 0 });
         return;
       case "setVolume":
-        if (this.gain) this.gain.gain.value = msg.volume;
-        this._update({ volume: msg.volume });
+        this.masterVolume = Number(msg.volume);
+        this._applyVolume();
+        this._update({ volume: this.masterVolume * this.localVolume });
         return;
     }
   }
@@ -202,5 +211,9 @@ export class SyncClient {
     }
   }
 
-  setLocalVolume(v) { if (this.gain) this.gain.gain.value = v; this._update({ volume: v }); }
+  setLocalVolume(v) {
+    this.localVolume = Math.max(0, Math.min(1, Number(v)));
+    this._applyVolume();
+    this._update({ volume: this.masterVolume * this.localVolume, localVolume: this.localVolume });
+  }
 }
