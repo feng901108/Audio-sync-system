@@ -11,6 +11,7 @@
   <section id="join" class="join">
     <h1>聚光广播</h1>
     <p>点击下方按钮加入广播。请保持页面前台。</p>
+    <div id="server-info" class="server-info"></div>
     <input id="device-name" placeholder="给这台设备起个名字" />
     <select id="zone-select" aria-label="选择分区"></select>
     <button id="join-btn">加入广播</button>
@@ -27,6 +28,7 @@
     </div>
     <div class="meta">
       <span>设备：<b id="device-label">—</b></span>
+      <span>IP：<b id="device-ip">—</b></span>
       <span>偏差：<b id="drift">0</b> ms</span>
       <span>RTT：<b id="rtt">0</b> ms</span>
       <span>时钟差：<b id="offset">0</b> ms</span>
@@ -46,6 +48,17 @@ const fmt = (ms) => {
 };
 const savedName = localStorage.getItem("juguang.deviceName") ?? "";
 $("device-name").value = savedName || `Web-${Math.random().toString(36).slice(2, 6)}`;
+
+async function loadServerInfo() {
+  try {
+    const r = await fetch("/api/health");
+    const h = await r.json();
+    if (h.serverIps?.length) {
+      const urls = h.serverIps.map((ip) => `http://${ip.address}:${h.port}`);
+      $("server-info").innerHTML = `<span>其他设备请访问：</span>${urls.map((u) => `<code>${u}</code>`).join(" ")}`;
+    }
+  } catch {}
+}
 
 async function loadZones() {
   let zones = [];
@@ -74,6 +87,7 @@ async function loadZones() {
 }
 
 let currentZoneName = "";
+let deviceIp = "";
 
 $("join-btn").addEventListener("click", async () => {
   const name = $("device-name").value.trim() || "Web";
@@ -94,6 +108,7 @@ $("join-btn").addEventListener("click", async () => {
     $("duration").textContent = fmt(s.durationMs);
     $("bar-fill").style.width = s.durationMs > 0 ? `${(s.positionMs / s.durationMs) * 100}%` : "0%";
     $("device-label").textContent = s.deviceId ? `${name} · ${s.deviceId.slice(0, 6)}` : name;
+    if (s.ip && s.ip !== deviceIp) { deviceIp = s.ip; $("device-ip").textContent = deviceIp; }
     $("drift").textContent = String(s.driftMs);
     $("rtt").textContent = String(s.rttMs);
     $("offset").textContent = String(s.clockOffsetMs);
@@ -103,6 +118,7 @@ $("join-btn").addEventListener("click", async () => {
   if ("wakeLock" in navigator) { try { await navigator.wakeLock.request("screen"); } catch {} }
 });
 
+loadServerInfo();
 loadZones();
 </script>
 </body>

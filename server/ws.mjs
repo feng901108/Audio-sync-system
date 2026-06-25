@@ -143,8 +143,12 @@ class Hub {
   attach(deviceId, conn, zoneId) {
     const existing = this.conns.get(deviceId);
     if (existing && existing.conn !== conn) existing.conn.close(4000);
-    this.conns.set(deviceId, { conn, zoneId });
+    this.conns.set(deviceId, { conn, zoneId, ip: conn.ip || "" });
     conn.zoneId = zoneId;
+  }
+
+  getDeviceIp(deviceId) {
+    return this.conns.get(deviceId)?.ip ?? null;
   }
 
   detach(conn) {
@@ -227,6 +231,8 @@ export function handleUpgrade(req, socket) {
   );
 
   const conn = new WSConn(socket);
+  const rawIp = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || socket.remoteAddress || "";
+  conn.ip = rawIp.startsWith("::ffff:") ? rawIp.slice(7) : rawIp;
 
   conn.on("message", (msg) => {
     if (msg.type === "register") {
@@ -236,7 +242,7 @@ export function handleUpgrade(req, socket) {
       conn.deviceId = dev.id;
       conn.zoneId = dev.zoneId ?? zoneId;
       hub.attach(dev.id, conn, conn.zoneId);
-      conn.send({ type: "hello", deviceId: dev.id, zoneId: conn.zoneId, serverTime: Date.now() });
+      conn.send({ type: "hello", deviceId: dev.id, zoneId: conn.zoneId, serverTime: Date.now(), ip: conn.ip });
       conn.send({ type: "setVolume", volume: Number(dev.volume) });
       const snap = snapshot(conn.zoneId);
       if (snap.isPlaying && snap.track && snap.startServerTime) {

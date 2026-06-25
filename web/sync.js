@@ -147,7 +147,7 @@ export class SyncClient {
           this.status.zoneId = msg.zoneId;
         }
         localStorage.setItem("juguang.deviceId", msg.deviceId);
-        this._update({ deviceId: msg.deviceId, zoneId: this.zoneId });
+        this._update({ deviceId: msg.deviceId, zoneId: this.zoneId, ip: msg.ip || "" });
         return;
       case "play":
       case "seek":
