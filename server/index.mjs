@@ -196,32 +196,50 @@ route("POST", "/api/tracks", async (req, res) => {
   } catch (e) {
     return sendJson(res, 400, { error: String(e?.message ?? e) });
   }
-  const file = parts.find((p) => p.filename);
-  if (!file) return sendJson(res, 400, { error: "未收到文件" });
-  const ext = extname(file.filename).toLowerCase();
-  if (!ALLOWED_EXT.has(ext)) return sendJson(res, 400, { error: `不支持的格式 ${ext}` });
+  const files = parts.filter((p) => p.filename);
+  if (files.length === 0) return sendJson(res, 400, { error: "未收到文件" });
 
-  const id = randomBytes(6).toString("hex");
-  const safe = `${id}${ext}`;
-  const outPath = resolve(AUDIO_DIR, safe);
-  await new Promise((ok, ng) => {
-    const ws = createWriteStream(outPath);
-    ws.on("finish", ok);
-    ws.on("error", ng);
-    ws.end(file.data);
-  });
+  const created = [];
+  const errors = [];
+  for (const file of files) {
+    const ext = extname(file.filename).toLowerCase();
+    if (!ALLOWED_EXT.has(ext)) {
+      errors.push({ filename: file.filename, error: `不支持的格式 ${ext}` });
+      continue;
+    }
+    const id = randomBytes(6).toString("hex");
+    const safe = `${id}${ext}`;
+    const outPath = resolve(AUDIO_DIR, safe);
+    try {
+      await new Promise((ok, ng) => {
+        const ws = createWriteStream(outPath);
+        ws.on("finish", ok);
+        ws.on("error", ng);
+        ws.end(file.data);
+      });
+    } catch (e) {
+      errors.push({ filename: file.filename, error: String(e?.message ?? e) });
+      continue;
+    }
+    let durationMs = 0;
+    try { durationMs = await probeAudioDuration(outPath); } catch {}
+    const titleRaw = file.filename.slice(0, file.filename.length - ext.length);
+    const stat = statSync(outPath);
+    const now = Date.now();
+    db.prepare(
+      "INSERT INTO tracks (id, filename, title, artist, duration_ms, size_bytes, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, safe, titleRaw || safe, null, durationMs, stat.size, now);
+    created.push({ id, filename: safe, title: titleRaw, artist: null, duration_ms: durationMs, size_bytes: stat.size, uploaded_at: now });
+  }
 
-  let durationMs = 0;
-  try { durationMs = await probeAudioDuration(outPath); } catch {}
-  const titleRaw = file.filename.slice(0, file.filename.length - ext.length);
-  const stat = statSync(outPath);
-  const now = Date.now();
-  db.prepare(
-    "INSERT INTO tracks (id, filename, title, artist, duration_ms, size_bytes, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-  ).run(id, safe, titleRaw || safe, null, durationMs, stat.size, now);
-  sendJson(res, 200, {
-    track: { id, filename: safe, title: titleRaw, artist: null, duration_ms: durationMs, size_bytes: stat.size, uploaded_at: now },
-  });
+  if (created.length === 0) {
+    return sendJson(res, 400, { error: "全部上传失败", errors });
+  }
+  // 兼容：单文件返回 {track}，多文件返回 {tracks}
+  if (created.length === 1) {
+    return sendJson(res, 200, { track: created[0], errors });
+  }
+  sendJson(res, 200, { tracks: created, errors });
 }, { requireAuth: true });
 
 route("DELETE", "/api/tracks/:id", async (req, res, params) => {
