@@ -92,7 +92,7 @@ fi
 
 # 用 rsync 优先，没有就退到 cp
 if command -v rsync >/dev/null 2>&1; then
-  echo "  · rsync server/  web/  *.json *.yml Dockerfile .env.example .gitignore .dockerignore"
+  echo "  · rsync server/  web/  scripts/  *.json *.yml Dockerfile .env.example .gitignore .dockerignore"
   rsync -av --delete \
     --exclude='data/' \
     --exclude='node_modules/' \
@@ -101,6 +101,7 @@ if command -v rsync >/dev/null 2>&1; then
     --exclude='Screenshot*' \
     "$PROJECT_ROOT/server/" "$NAS_WEBDAV/server/"
   rsync -av --delete "$PROJECT_ROOT/web/" "$NAS_WEBDAV/web/"
+  rsync -av --delete "$PROJECT_ROOT/scripts/" "$NAS_WEBDAV/scripts/"
   rsync -av \
     "$PROJECT_ROOT/package.json" \
     "$PROJECT_ROOT/Dockerfile" \
@@ -115,6 +116,7 @@ else
   # 不删除远端文件，只覆盖（--delete 在 cp 里没有，需要用 rsync 或 rm）
   cp -vR "$PROJECT_ROOT/server/." "$NAS_WEBDAV/server/" >/dev/null
   cp -vR "$PROJECT_ROOT/web/." "$NAS_WEBDAV/web/" >/dev/null
+  cp -vR "$PROJECT_ROOT/scripts/." "$NAS_WEBDAV/scripts/" >/dev/null
   cp -v \
     "$PROJECT_ROOT/package.json" \
     "$PROJECT_ROOT/Dockerfile" \

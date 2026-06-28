@@ -38,6 +38,7 @@ if not exist "%NAS_WEBDAV%" (
 echo === 同步文件 ===
 xcopy /E /I /Y /Q "server" "%NAS_WEBDAV%\server" >nul
 xcopy /E /I /Y /Q "web" "%NAS_WEBDAV%\web" >nul
+xcopy /E /I /Y /Q "scripts" "%NAS_WEBDAV%\scripts" >nul
 copy /Y "package.json" "%NAS_WEBDAV%\" >nul
 copy /Y "Dockerfile" "%NAS_WEBDAV%\" >nul
 copy /Y "docker-compose.yml" "%NAS_WEBDAV%\" >nul
