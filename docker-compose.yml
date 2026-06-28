@@ -1,0 +1,73 @@
+# 聚光广播 Juguang · Docker Compose
+# 部署目标：飞牛 NAS (fnOS) · x86_64
+# 用法：
+#   docker compose up -d --build        # 首次构建并启动
+#   docker compose logs -f              # 查看日志
+#   docker compose restart              # 重启
+#   docker compose down                 # 停止并删除容器
+#   docker compose pull && up -d        # 拉新镜像重启（CI/CD 用）
+
+services:
+  juguang:
+    # 多架构支持：x86_64 (NAS) 和本机开发都用同一个 tag
+    # 如需指定架构构建：docker buildx build --platform linux/amd64 -t juguang:latest --load .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_VERSION: 24-alpine
+    image: juguang:latest
+
+    container_name: juguang
+    restart: unless-stopped
+
+    # 端口：容器内 3000，映射到 NAS 的 3000
+    # 如果 NAS 3000 被占，改 NAS_PORT
+    ports:
+      - "${JUGUANG_PORT:-3000}:3000"
+
+    # 数据持久化：db + 音频文件
+    # 路径相对于 docker-compose.yml 所在目录
+    volumes:
+      - ./data:/app/data
+
+    # 环境变量
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      # fnOS 时区（影响 SQLite 日期、cron 等）
+      TZ: ${TZ:-Asia/Shanghai}
+
+    # 资源限制（fnOS 12GB 内存；此服务轻量，限制宽松些）
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+
+    # 容器内健康检查（Docker 自动管理）
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # 日志限制（防止容器日志占满磁盘）
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # 网络隔离（未来加 cloudflared 之类可放同一 network）
+    networks:
+      - juguang-net
+
+networks:
+  juguang-net:
+    driver: bridge

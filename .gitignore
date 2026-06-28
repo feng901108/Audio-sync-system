@@ -11,3 +11,9 @@ web/dist/
 *.log
 .env
 .pnpm-store/
+
+# 截图/录屏（Snipaste 等）
+Snipaste_*.jpg
+Snipaste_*.png
+Screenshot*.png
+
