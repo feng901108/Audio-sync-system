@@ -1,0 +1,51 @@
+# 聚光广播 Juguang · fnOS Docker 应用简化版
+# 直接粘到 fnOS Docker 应用 → Compose → 部署界面
+# 或保存为 docker-compose.yml 后用命令行 docker compose up
+
+version: "3.8"
+
+services:
+  juguang:
+    # 镜像：构建当前目录的 Dockerfile
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 用阿里云镜像拉 node:24-alpine（fnOS 默认 docker.fnnas.com 401）
+        NODE_IMAGE: registry.cn-hangzhou.aliyuncs.com/library/node:24-alpine
+
+    container_name: juguang
+
+    # 端口映射：容器 3000 → NAS 3000
+    # 如果 NAS 3000 被占，改成 8080:3000
+    ports:
+      - "3000:3000"
+
+    # 数据持久化：./data 映射到容器 /app/data
+    # 改为你 NAS 上实际路径，比如 /vol1/1000/juguang/data
+    volumes:
+      - /vol1/1000/juguang/data:/app/data
+
+    # 容器自动重启
+    restart: unless-stopped
+
+    # 环境变量
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=3000
+      - HOST=0.0.0.0
+
+    # 健康检查（fnOS Docker UI 可能不识别，留命令行用）
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M

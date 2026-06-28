@@ -1,24 +1,27 @@
-# syntax=docker/dockerfile:1.7
+# syntax=registry.cn-hangzhou.aliyuncs.com/docker/dockerfile:1.7
 # 聚光广播 Juguang 服务端 — 多阶段 Docker 构建
 # 最终镜像基于 node:24-alpine，不含构建工具，< 100MB
+# base image 走阿里云国内镜像（避免 fnOS 默认 docker.fnnas.com 401 问题）
 
 ARG NODE_VERSION=24-alpine
+ARG NODE_IMAGE=registry.cn-hangzhou.aliyuncs.com/library/node:${NODE_VERSION}
 
 # ---- builder 阶段：仅用于安装生产依赖（虽然零依赖，留接口）----
-FROM node:${NODE_VERSION} AS builder
+FROM ${NODE_IMAGE} AS builder
 WORKDIR /build
 # 当前 package.json 无 dependencies；如果以后加，仅生产依赖
 COPY package.json ./
 # RUN npm ci --omit=dev  # 未来添加依赖时启用
 
 # ---- runtime 阶段 ----
-FROM node:${NODE_VERSION} AS runtime
+FROM ${NODE_IMAGE} AS runtime
 LABEL org.opencontainers.image.title="juguang"
 LABEL org.opencontainers.image.description="园区多设备音频同步广播系统"
 
 # 安装 tini 用于正确处理 PID 1 信号（SIGTERM/SIGINT/SIGKILL）
-# node:24-alpine 已经内置 tini？不内置，需装
-RUN apk add --no-cache tini curl
+# 同时配置 alpine apk 用国内镜像源（清华源）
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apk/repositories \
+ && apk add --no-cache tini curl
 
 # node 用户（alpine 自带 node 用户 uid=1000）
 WORKDIR /app
