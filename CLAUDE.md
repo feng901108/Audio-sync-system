@@ -76,6 +76,9 @@ npm run deploy -- "feat: 改动说明"
 # 或 Windows 原生 cmd：
 npm run deploy:windows -- "feat: 改动说明"
 
+# NAS 终端（每次本机 deploy 后跑一次 — **必须 rebuild 才能更新 web/**）
+bash /vol1/1000/juguang/deploy.sh
+
 # 校验
 curl http://localhost:3000/api/health
 
@@ -84,6 +87,8 @@ node --check server/index.mjs
 node --check server/scheduler.mjs
 # （其它 .mjs 同理）
 ```
+
+**⚠️ 重要**：web/ 改动必须 rebuild 容器镜像才能生效。光 `docker compose restart` 不会更新前端——`web/` 在 `Dockerfile` 里是 `COPY` 进去的，baked into image。`deploy.sh` 包含 `build --no-cache`，会自动重建。
 
 环境变量：`PORT`（默认 3000）、`HOST`（默认 `0.0.0.0`，全网卡监听）。
 
