@@ -1165,6 +1165,36 @@ input[type="file"] {
 }
 
 /* ============================================================
+   queue drag-and-drop
+   ============================================================ */
+.queue-draggable { /* 容器：标记这是个可拖拽排序的列表 */ }
+.queue-item {
+  cursor: grab;
+  user-select: none;
+}
+.queue-item:active { cursor: grabbing; }
+.queue-item.dragging {
+  opacity: 0.4;
+  background: var(--accent-soft);
+}
+.queue-item.drop-target {
+  border-top: 2px solid var(--accent);
+  padding-top: calc(var(--sp-2) - 2px); /* 抵消边框高度 */
+}
+.drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 14px;
+  color: var(--muted-soft);
+  flex-shrink: 0;
+  cursor: grab;
+}
+.queue-item:hover .drag-handle { color: var(--muted); }
+
+/* ============================================================
    mode switcher — segmented control in topbar
    ============================================================ */
 .mode-switch {
