@@ -35,14 +35,12 @@
   <!-- dashboard: 单屏布局 -->
   <main id="dashboard" class="dashboard-compact" hidden>
 
-    <!-- 顶栏：标题 + 分区 tab + 操作 -->
+    <!-- 顶栏：标题 + 操作 -->
     <header class="topbar-compact">
       <div class="topbar-left">
         <h1 class="topbar-title">聚光广播</h1>
         <span class="topbar-who" id="who"></span>
       </div>
-
-      <nav id="zone-tabs" class="zone-tabs-compact" aria-label="分区切换"></nav>
 
       <div class="topbar-actions">
         <!-- 播放模式：顺序 / 单曲循环 / 歌单循环 -->
@@ -58,9 +56,6 @@
           </button>
         </div>
         <button id="playlists-btn" class="btn btn-ghost" aria-label="歌单管理">歌单</button>
-        <button id="zones-mgmt-btn" class="btn btn-ghost" aria-label="分区管理">
-          <span aria-hidden="true">⚙</span> 分区
-        </button>
         <button id="logout-btn" class="btn btn-ghost">登出</button>
       </div>
     </header>
@@ -68,17 +63,26 @@
     <!-- 左右两列 -->
     <div class="layout-compact">
 
-      <!-- 左列：曲库管理（占大头） -->
+      <!-- 左列：分区 tab + 上传 + 曲库 + 本分区设备 -->
       <section class="col col-main">
+        <!-- 分区 tab + 新建分区 + 分区管理 -->
+        <div class="panel panel-zones">
+          <div class="zones-row">
+            <nav id="zone-tabs" class="zone-tabs-inline" aria-label="分区切换"></nav>
+            <button id="zone-add-btn" class="icon-btn" aria-label="新建分区" title="新建分区">+</button>
+            <button id="zones-mgmt-btn" class="btn btn-ghost btn-tiny" aria-label="分区管理" title="改名 / 删除分区">管理</button>
+          </div>
+        </div>
+
+        <!-- 曲库 + 上传 -->
         <div class="panel">
           <header class="panel-head">
             <h2 class="panel-title">
-              <span id="lib-title">曲库</span>
-              <span class="muted" style="font-weight:400;font-size:13px;" id="lib-sub">全局共享</span>
+              <span>曲库</span>
+              <span class="muted" style="font-weight:400;font-size:13px;">全局共享</span>
             </h2>
           </header>
 
-          <!-- 上传区（紧凑） -->
           <form id="upload-form" class="upload-compact">
             <label class="upload-drop-compact" id="upload-drop">
               <input id="upload-file" type="file" accept="audio/*" multiple />
@@ -95,9 +99,18 @@
 
           <ul id="track-list" class="list list-compact"></ul>
         </div>
+
+        <!-- 本分区设备 -->
+        <div class="panel">
+          <header class="panel-head">
+            <h3 class="panel-title-sm">本分区设备</h3>
+            <span class="muted" style="font-size:11px;" id="device-count">0 台</span>
+          </header>
+          <ul id="device-list" class="list list-compact"></ul>
+        </div>
       </section>
 
-      <!-- 右列：现在播放 + 队列 + 设备（紧凑） -->
+      <!-- 右列：现在播放 + 队列（紧凑） -->
       <aside class="col col-side">
 
         <!-- now playing -->
@@ -129,20 +142,11 @@
           <ul id="queue-list" class="list list-compact"></ul>
         </div>
 
-        <!-- 设备 -->
-        <div class="panel">
-          <header class="panel-head">
-            <h3 class="panel-title-sm">设备</h3>
-            <span class="muted" style="font-size:11px;" id="device-count">0 台</span>
-          </header>
-          <ul id="device-list" class="list list-compact"></ul>
-        </div>
-
       </aside>
     </div>
   </main>
 
-  <!-- 分区管理 弹窗 -->
+  <!-- 分区管理 弹窗（改名 / 删除） -->
   <div id="zones-modal" class="modal-backdrop" hidden>
     <div class="modal" role="dialog" aria-labelledby="zones-modal-title">
       <div class="modal-head">
@@ -150,12 +154,6 @@
         <button id="zones-close" class="icon-btn" aria-label="关闭">×</button>
       </div>
       <ul id="zones-list" class="list"></ul>
-      <form id="zone-create-form" class="upload" style="margin-top:var(--sp-4);">
-        <div class="field">
-          <input id="zone-new-name" class="input" placeholder="新分区名称" maxlength="32" />
-        </div>
-        <button type="submit" class="btn btn-primary" style="height:44px;">创建分区</button>
-      </form>
       <p id="zones-err" class="modal-error"></p>
     </div>
   </div>
@@ -682,18 +680,15 @@ async function bootDashboard() {
   }
   renderModeSwitch();
 
-  $("zone-create-form").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const name = $("zone-new-name").value.trim();
+  $("zone-add-btn").onclick = async () => {
+    const name = prompt("新分区名称");
     if (!name) return;
     try {
       const r = await api("/api/zones", { method: "POST", json: { name } });
-      $("zone-new-name").value = "";
       await refreshZones();
       switchZone(r.zone.id);
-      renderZonesModal();
-    } catch (e) { $("zones-err").textContent = e.message; }
-  });
+    } catch (e) { alert(e.message); }
+  };
 
   const uploadFileInput = $("upload-file");
   const uploadDrop = $("upload-drop");
