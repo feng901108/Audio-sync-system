@@ -1,10 +1,9 @@
-# syntax=registry.cn-hangzhou.aliyuncs.com/docker/dockerfile:1.7
 # 聚光广播 Juguang 服务端 — 多阶段 Docker 构建
 # 最终镜像基于 node:24-alpine，不含构建工具，< 100MB
 # base image 走阿里云国内镜像（避免 fnOS 默认 docker.fnnas.com 401 问题）
 
 ARG NODE_VERSION=24-alpine
-ARG NODE_IMAGE=registry.cn-hangzhou.aliyuncs.com/library/node:${NODE_VERSION}
+ARG NODE_IMAGE=docker.m.daocloud.io/library/node:${NODE_VERSION}
 
 # ---- builder 阶段：仅用于安装生产依赖（虽然零依赖，留接口）----
 FROM ${NODE_IMAGE} AS builder
