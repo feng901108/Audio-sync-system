@@ -12,7 +12,7 @@ services:
       dockerfile: Dockerfile
       args:
         # 用阿里云镜像拉 node:24-alpine（fnOS 默认 docker.fnnas.com 401）
-        NODE_IMAGE: registry.cn-hangzhou.aliyuncs.com/library/node:24-alpine
+        NODE_IMAGE: docker.m.daocloud.io/library/node:24-alpine
 
     container_name: juguang
 
