@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node server/index.mjs",
     "dev": "node --watch server/index.mjs",
-    "init-admin": "node server/init-admin.mjs"
+    "init-admin": "node server/init-admin.mjs",
+    "deploy": "bash scripts/deploy.sh",
+    "deploy:windows": "scripts\\deploy.cmd"
   }
 }
