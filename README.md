@@ -1,113 +1,235 @@
 # 聚光广播 Juguang
 
-园区内的多设备音频同步广播系统。一处选歌，所有终端（小米电视、安卓手机接音响、iPhone Safari）<80ms 内同步播放。
+园区内的多设备音频同步广播系统。一处选歌，所有终端（小米电视、安卓手机接音响、iPhone Safari）< 80ms 内同步播放。
 
 > **零依赖**：服务端只需要 Node.js ≥ 22.5（用到了内置 `node:sqlite`）。前端零构建，纯静态文件 + ES module。
+
+## 功能
+
+- **多设备同步播放**：NTP 风格时钟同步 + 预约调度 + 漂移修正
+- **多分区架构**：每分区独立播放状态、队列、广播；曲目库全局共享
+- **歌单管理**：创建 / 改名 / 删除歌单，批量载入分区队列
+- **播放模式**：顺序 / 单曲循环 / 歌单循环
+- **曲目管理**：上传（多文件 + 进度条）、删除、编辑标题 / 艺人
+- **队列拖拽排序**：HTML5 原生拖拽改顺序
+- **两层音量**：服务端 master × 客户端 local，admin 调音量不覆盖用户本机
+- **设备管理**：在线状态、改名、调音量、移动分区、移除
+- **零公网依赖**：自实现 WebSocket（RFC6455）、自管 session（scrypt 哈希）
 
 ## 架构
 
 ```
 ┌─────────────────────┐
-│  管理端浏览器 /admin │  ← 上传 / 选歌 / 控制队列 / 调音量
+│  管理端浏览器 /admin │  ← 上传 / 选歌 / 控队列 / 分区管理 / 歌单 / 模式
 └──────────┬──────────┘
-           │  HTTP
-┌──────────▼─────────────────────────────────────────┐
-│ 服务端 Node.js (zero-dep, node:sqlite + node:http)│
-│   - /api/auth /tracks /devices /playback /queue   │
-│   - /ws 长连接：注册、ping/pong、下发调度         │
-│   - /audio 静态托管音频文件                        │
-└──────────┬─────────────────────────────────────────┘
-           │  WebSocket（长连接）
+           │  HTTP + WebSocket
+┌──────────▼──────────────────────────────────────────────────────────┐
+│ 服务端 Node.js (zero-dep, node:sqlite + node:http)                 │
+│   - REST: /api/auth /tracks /devices /playlists /zones /playback  │
+│   - WS:   /ws  Hub 多分区广播、ping/pong、register                 │
+│   - 静态: /audio/*  Range 请求                                       │
+└──────────┬──────────────────────────────────────────────────────────┘
+           │  WebSocket（zoneId-scoped broadcast）
    ┌───────┼───────┬─────────────┐
    ▼       ▼       ▼             ▼
  小米电视  安卓手机  iPhone Safari  其它设备
  (网页)   (网页)   (网页 /)
 ```
 
-## 快速开始
+## 快速开始（开发）
 
-需要 **Node.js ≥ 22.5**（内置 `node:sqlite`）。当前已用 v24.15 验证通过。
+需要 **Node.js ≥ 22.5**（已用 v24.15 验证）。
 
 ```bash
-cd /Users/fengjing/Claude/juguang
+git clone <repo>
+cd Audio-sync-system
+
 # 1) 创建管理员（首次必做）
 node server/init-admin.mjs admin yourpassword
 
-# 2) 启动服务端
-node server/index.mjs
-# 或开发热重启：
-node --watch server/index.mjs
+# 2) 启动
+npm start                # 生产
+npm run dev              # 热重启（--watch）
+
+# 3) 浏览器
+# 管理端: http://<服务器 IP>:3000/admin
+# 聆听端: http://<服务器 IP>:3000/
 ```
 
-打开浏览器：
-- 管理端：`http://<服务器内网 IP>:3000/admin`
-- 终端聆听页：`http://<服务器内网 IP>:3000/`
+环境变量：`PORT`（默认 3000）、`HOST`（默认 `0.0.0.0`）。
 
-环境变量：
-- `PORT`（默认 3000）
-- `HOST`（默认 0.0.0.0，全网卡）
+## 部署（Docker / NAS）
 
-## 同步原理
+**镜像构建**：`Dockerfile` 用 `node:24-alpine`，国内源走 `docker.m.daocloud.io/library/node:24-alpine`（fnOS 默认 `docker.fnnas.com` 返 401）。
 
-详见 [.claude/plans/iphone-radiant-lollipop.md](.claude/plans/iphone-radiant-lollipop.md) — 摘要：
+```bash
+docker compose up -d --build      # 标准部署
+docker compose logs -f juguang    # 看日志
+docker compose restart juguang    # 重启
+docker compose down               # 停止并删除容器
+```
 
-1. **NTP 风格时钟同步**：每 2s 客户端 ping 一次，取最近 10 次中 RTT 最小 3 次的 offset 中位数。
-2. **预约调度**：服务端命令带 `startServerTime`（now + 800ms 预加载缓冲），所有客户端转换为本地时间精确 `start()`。
-3. **漂移修正**：每 3s 比对应播位置与实播位置，30-200ms 用 ±0.5% 速率追平，>200ms 直接重新 seek。
+`docker-compose.yml` 含健康检查、资源限制、日志轮转；`docker-compose.fnOS.yml` 是给 fnOS Docker 应用 UI 的简化版（去掉了 UI 不识别的字段）。
 
-## 验收清单
+### NAS（飞牛 fnOS）本机 → NAS 部署流程
 
-按下面顺序逐项验证：
+> 本机代码推到 GitHub → NAS 通过 WebDAV 同步代码 → NAS 终端 docker 重构建建。
 
-- [ ] `curl http://localhost:3000/api/health` 返回 `{ok: true}`
-- [ ] `/admin` 用 admin/yourpassword 登录、上传一首 MP3 看到曲目列表
-- [ ] 另开标签 `/`，输入设备名，点"加入广播"，admin 选歌点 ▶ 能听到声音
-- [ ] **同时打开两个浏览器标签作为两个聆听端**，admin 播放同一首歌，输出相位差应 <80ms
-- [ ] iPhone Safari 接入同 WiFi 打开 `http://<服务器 IP>:3000/`，加入广播，与电脑同步
-- [ ] admin 暂停/继续/切歌/拖拽队列，所有终端动作一致
-- [ ] 单独调整某个设备的音量，不影响其它设备
-- [ ] 客户端 WiFi 断开 5 秒再连接，自动重新加入并同步到当前进度
-- [ ] 5 分钟以上的歌，结尾各端漂移仍 <80ms
+**本机一次性配置**（在项目根）：
 
-第 4 条不达标可调三个旋钮：
-- [server/scheduler.mjs](server/scheduler.mjs) `PRELOAD_MS`（默认 800，慢端可调到 1200）
-- [web/sync.js](web/sync.js) `PING_INTERVAL_MS`（默认 2000，可调到 1000 加快收敛）
-- [web/sync.js](web/sync.js) 漂移阈值 30/200，按现场实测
+```bash
+cp .env.example .env
+# 编辑 .env，确认 NAS_WEBDAV=Z:/juguang（你的 WebDAV 挂载点）
+```
 
-## 项目结构
+**本机每次开发完**（一行命令）：
+
+```bash
+npm run deploy -- "feat: 你的改动说明"
+# 自动：git add + commit + push origin dev + WebDAV 复制到 Z:/juguang
+```
+
+**NAS 终端**（每次本机跑完 deploy 后）：
+
+```bash
+bash /vol1/1000/juguang/deploy.sh
+# 自动：docker compose build --no-cache + up -d + 健康检查
+```
+
+`scripts/deploy.sh`（本机侧）和 `deploy.sh`（NAS 侧）各自负责一段；两者解耦是因为 fnOS 终端用户不在 docker group，用了 `sudo`。
+
+## 文件结构
 
 ```
 juguang/
-├─ package.json              # 没有 dependencies，纯启动脚本
+├─ package.json              # 零 dependencies，纯启动脚本
 ├─ server/
-│  ├─ index.mjs              # http 入口 + 路由
-│  ├─ db.mjs                 # node:sqlite 表结构
+│  ├─ index.mjs              # HTTP 入口 + 路由注册（~480 行）
+│  ├─ db.mjs                 # node:sqlite 表结构（admins / tracks / devices /
+│  │                          #   playback_state / sessions / zones / playlists）
 │  ├─ auth.mjs               # scrypt 密码 + 自管 session
-│  ├─ scheduler.mjs          # 同步调度核心
-│  ├─ ws.mjs                 # 自实现 WebSocket（RFC6455 已通过握手测试）
-│  ├─ multipart.mjs          # 自实现 multipart 解析（已单测）
-│  ├─ audio-probe.mjs        # MP3 时长探测
-│  └─ init-admin.mjs         # 创建管理员
-├─ web/                      # 直接静态托管，无构建
+│  ├─ scheduler.mjs          # 同步调度核心：play/pause/seek/next/enqueue、
+│  │                          #   zone CRUD、playlist CRUD
+│  ├─ ws.mjs                 # 自实现 WebSocket + Hub（zone-scoped broadcast）
+│  ├─ multipart.mjs          # 自实现 multipart/form-data 解析（200MB 上限）
+│  ├─ audio-probe.mjs        # MP3 时长探测（CBR 准，VBR 近似）
+│  └─ init-admin.mjs         # 初始化管理员 CLI
+├─ web/                      # 零构建，直接静态托管
 │  ├─ index.html             # 聆听页 /
-│  ├─ admin.html             # 管理页 /admin
-│  ├─ sync.js                # 同步客户端核心（NTP + Web Audio）
-│  └─ styles.css
-└─ data/
-   ├─ audio/                 # 上传文件落盘位置
-   └─ app.db                 # SQLite，首次启动自动创建
+│  ├─ admin.html             # 管理页 /admin（左/右分栏单屏布局）
+│  ├─ sync.js                # 同步客户端核心（NTP + Web Audio API）
+│  └─ styles.css             # 设计系统（Apple Music 风格：纯白 + #ff2d55）
+├─ scripts/
+│  ├─ deploy.sh              # 本机一键部署：git + WebDAV（bash / git bash）
+│  └─ deploy.cmd             # Windows cmd 原生 shim
+├─ data/                     # 运行时数据（gitignore）
+│  ├─ audio/                 # 上传的音频文件
+│  └─ app.db                 # SQLite（首次启动自动建表）
+├─ Dockerfile                # node:24-alpine + tini + curl
+├─ docker-compose.yml        # 标准部署
+├─ docker-compose.fnOS.yml   # fnOS Docker UI 简化版
+├─ .env / .env.example       # 端口、时区、WebDAV 路径（.env 不入库）
+├─ .dockerignore / .gitignore
+├─ README.md                 # 本文件
+└─ CLAUDE.md                 # 开发规范、命令速查、模块速查
 ```
+
+## REST API
+
+所有受保护接口（管理操作）需先 `POST /api/auth/login` 拿 `juguang.sid` cookie。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/health` | 健康检查 + 服务端 IP |
+| GET | `/api/auth/me` | 当前登录状态 |
+| POST | `/api/auth/login` / `logout` | 登录 / 登出 |
+| GET | `/api/tracks` | 列出全部曲目 |
+| POST | `/api/tracks` | 上传（multipart，多文件，单文件 ≤200MB） |
+| PATCH | `/api/tracks/:id` | 改标题 / 艺人 |
+| DELETE | `/api/tracks/:id` | 删除（连带文件） |
+| GET | `/api/devices` | 全部设备 |
+| GET | `/api/zones/:zoneId/devices` | 该分区设备 |
+| PATCH | `/api/devices/:id` | 改名 / 调音量 / 移分区 |
+| DELETE | `/api/devices/:id` | 移除（关 WS） |
+| GET | `/api/zones` | 全部分区 + snapshot |
+| POST | `/api/zones` | 新建分区 |
+| PATCH | `/api/zones/:id` | 改名 |
+| DELETE | `/api/zones/:id` | 删除（非内置） |
+| GET | `/api/zones/:zoneId/snapshot` | 该分区播放快照 |
+| POST | `/api/zones/:zoneId/playback/play` | 播放（`{trackId, offsetMs?}`） |
+| POST | `/api/zones/:zoneId/playback/pause` / `resume` / `stop` / `next` / `seek` | |
+| PATCH | `/api/zones/:zoneId/playback/mode` | 模式：`sequential` / `loop-one` / `loop-all` |
+| POST | `/api/zones/:zoneId/queue/enqueue` / `replace` / `clear` | 队列操作 |
+| POST | `/api/zones/:zoneId/queue/load-playlist` | 用歌单替换队列 |
+| GET | `/api/playlists` | 全部歌单 |
+| POST | `/api/playlists` | 新建歌单 |
+| GET | `/api/playlists/:id/tracks` | 歌单曲目 |
+| POST | `/api/playlists/:id/tracks` | 加曲（`{trackIds}`） |
+| PATCH | `/api/playlists/:id` | 改名 |
+| DELETE | `/api/playlists/:id` / `/tracks/:trackId` | 删歌单 / 从歌单移曲 |
+| GET | `/audio/:filename` | 静态音频（支持 Range） |
+| WS | `/ws` | 设备注册 + zone-scoped 调度广播 |
+
+旧路径 `/api/playback/...` 和 `/api/queue/...` 仍可用，内部走 zone=1。下个大版本删除。
+
+## 同步原理
+
+服务端调度器是事实唯一来源。客户端只听命令，不传时钟。
+
+1. **NTP 风格时钟同步**：每 2s 客户端 ping 服务端，取最近 10 次 RTT 最小 3 次的 offset 中位数作为本地-服务端时钟差。
+2. **预约调度**：`play` 命令带 `startServerTime = now + PRELOAD_MS`（默认 800ms 预加载缓冲），客户端换算到本地时刻精确 `start()`。
+3. **漂移修正**：每 3s 比对应播位置 vs 实播位置：30–200ms 用 ±0.5% 速率追平，>200ms 直接重新 seek。
+4. **中途加入**：新连接拿到 snapshot 时算投影位置 + 新 `startServerTime`，避免进度跳变。
+
+可调旋钮：
+- `server/scheduler.mjs` `PRELOAD_MS`（默认 800，慢端调到 1200）
+- `web/sync.js` `PING_INTERVAL_MS`（默认 2000，可调到 1000 加快收敛）
+- `web/sync.js` 漂移阈值 30/200ms，按现场实测
+
+## 设计
+
+- **设计语言**：Apple Music 风格（纯白 + #ff2d55 强调色 + SF Pro 字体 + 8px 网格 + 28px 大圆角）
+- **管理端布局**：左 / 右分栏单屏
+  - 左列：分区 tab（内嵌顶部，无弹窗）+ 上传 + 曲库 + 本分区设备
+  - 右列：现在播放 hero + 队列（可拖拽排序）
+- **聆听端**：单设备单 zone；展示 zone 标签、漂移、RTT、时钟差、本机音量
+
+## 验收清单
+
+```bash
+curl http://localhost:3000/api/health   # → {ok: true}
+```
+
+浏览器端按顺序：
+
+- [ ] `/admin` 用 admin 登录、上传一首 MP3 看到曲库列表
+- [ ] 另开标签打开 `/`，输入设备名加入广播；admin 选歌 ▶ 能听到声音
+- [ ] **同时打开两个浏览器标签作为两个聆听端**，admin 播同一首歌，目测相位差 < 80ms（必要时录音软件测）
+- [ ] iPhone Safari 接入同 WiFi 打开 `http://<服务器 IP>:3000/`，加入广播，与电脑同步
+- [ ] admin 暂停 / 继续 / 切歌 / 拖拽队列 / 切模式，所有终端动作一致
+- [ ] 单独调某个设备音量，不影响其它设备
+- [ ] 客户端断 WiFi 5s 再连，自动重连并追到当前进度
+- [ ] ≥5 分钟的歌，结尾各端漂移仍 < 80ms
+- [ ] 多分区：在 zone=1 和 zone=2 各放不同歌，跨区互不影响
+- [ ] 歌单：创建歌单、加曲、改名、载入队列
 
 ## 已知限制
 
-- 当前脚本运行环境（Claude 沙箱）的 `listen()` 系统调用被拒，无法在此完成端到端启动验证；但已验证：所有模块语法、import 链路、scrypt 密码哈希、SQLite 读写、multipart 解析、WebSocket 握手哈希（与 RFC6455 官方示例字节相同）。**请在你的本地 Mac mini/NUC 上跑 `node server/index.mjs`**，必定能启。
-- 单同步分区（`zone_id=1` 已在表里预留扩展位）。
-- iOS Safari 后台或锁屏后会暂停 AudioContext，需保持页面前台。
-- MP3 时长探测用 CBR 假设；VBR 文件时长会近似。
+- **时长探测**：仅 MP3 准确；M4A / AAC / OGG / WAV / FLAC 直接返 0，前端 `<audio>` metadata 兜底
+- **session 不续期**：只检查 `expires_at`，长时间不操作会突然掉登录
+- **iOS Safari 后台 / 锁屏**：AudioContext 暂停，需保持页面前台
+- **HTTPS**：生产部署需前置反代（如 Caddy / Nginx / fnOS FN Connect）
+- **文件级鉴权**：`/audio/*` 拿到文件名即可下载，无 token 校验
 
 ## 后续
 
+- 定时广播 / BGM 调度（cron）
 - Android 原生客户端（Kotlin + ExoPlayer + Foreground Service）
-- 多分区独立播放
-- 定时任务（上下班铃、夜间 BGM）
 - mDNS 自动发现服务端
+- 队列拖拽排序持久化已有，前端 UI 已实现
+
+---
+
+## License
+
+MIT
