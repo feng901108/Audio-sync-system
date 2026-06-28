@@ -136,10 +136,10 @@
         <!-- 队列 -->
         <div class="panel">
           <header class="panel-head">
-            <h3 class="panel-title-sm">播放队列</h3>
+            <h3 class="panel-title-sm">播放队列 <span class="muted" style="font-weight:400;font-size:11px;text-transform:none;letter-spacing:0;">（可拖拽排序）</span></h3>
             <button id="clear-queue" class="btn btn-ghost" style="height:28px;font-size:12px;padding:0 10px;">清空</button>
           </header>
-          <ul id="queue-list" class="list list-compact"></ul>
+          <ul id="queue-list" class="list list-compact queue-draggable"></ul>
         </div>
 
       </aside>
@@ -210,6 +210,32 @@
         </div>
       </form>
       <p id="picker-err" class="modal-error"></p>
+    </div>
+  </div>
+
+  <!-- 曲目编辑 弹窗 -->
+  <div id="track-edit-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-labelledby="track-edit-modal-title" style="width:420px;">
+      <div class="modal-head">
+        <h3 id="track-edit-modal-title" class="modal-title">编辑曲目</h3>
+        <button id="track-edit-close" class="icon-btn" aria-label="关闭">×</button>
+      </div>
+      <form id="track-edit-form" style="display:flex;flex-direction:column;gap:var(--sp-3);">
+        <div class="field">
+          <label class="muted" style="font-size:12px;">标题</label>
+          <input id="track-edit-title" class="input" maxlength="200" />
+        </div>
+        <div class="field">
+          <label class="muted" style="font-size:12px;">艺人</label>
+          <input id="track-edit-artist" class="input" maxlength="200" placeholder="（留空表示未知）" />
+        </div>
+        <p id="track-edit-meta" class="muted" style="font-size:11.5px;margin:0;"></p>
+        <div style="display:flex;gap:var(--sp-2);">
+          <button type="submit" class="btn btn-primary" style="flex:1;height:44px;">保存</button>
+          <button type="button" id="track-edit-cancel" class="btn btn-ghost" style="height:44px;">取消</button>
+        </div>
+      </form>
+      <p id="track-edit-err" class="modal-error"></p>
     </div>
   </div>
 
@@ -294,6 +320,7 @@ async function refreshTracks() {
         <button class="icon-btn primary" data-act="play" aria-label="播放" title="播放">▶</button>
         <button class="icon-btn" data-act="enqueue" aria-label="加入队列" title="加入队列">+</button>
         <button class="icon-btn" data-act="add-to-pl" aria-label="加入歌单" title="加入歌单">♡</button>
+        <button class="icon-btn" data-act="edit" aria-label="编辑元数据" title="编辑标题 / 艺人">✎</button>
         <button class="icon-btn danger" data-act="del" aria-label="删除" title="删除">✕</button>
       </div>`;
     li.querySelector(".list-item-title").textContent = t.title;
@@ -308,6 +335,7 @@ async function refreshTracks() {
       refreshPlayback();
     };
     li.querySelector('[data-act="add-to-pl"]').onclick = () => openAddToPlaylistPicker(t.id);
+    li.querySelector('[data-act="edit"]').onclick = () => openTrackEdit(t.id);
     li.querySelector('[data-act="del"]').onclick = async () => {
       if (!confirm(`删除「${t.title}」？`)) return;
       await api(`/api/tracks/${t.id}`, { method: "DELETE" });
@@ -375,11 +403,16 @@ async function refreshPlayback() {
     s.queue.forEach((tid, idx) => {
       const t = tracks.find((x) => x.id === tid);
       const li = document.createElement("li");
-      li.className = "list-item list-item-compact";
-      li.innerHTML = `<div class="list-item-main"><div class="list-item-sub">${idx + 1}. <span></span></div></div>`;
-      li.querySelector("span").textContent = t ? t.title : tid;
+      li.className = "list-item list-item-compact queue-item";
+      li.draggable = true;
+      li.dataset.trackId = tid;
+      li.innerHTML = `
+        <span class="drag-handle" aria-hidden="true">≡</span>
+        <div class="list-item-main"><div class="list-item-sub">${idx + 1}. <span></span></div></div>`;
+      li.querySelector("span:last-child").textContent = t ? t.title : tid;
       ql.appendChild(li);
     });
+    bindQueueDrag();
   }
 }
 
@@ -563,6 +596,95 @@ function flashUploadStatus(text) {
   setTimeout(() => { if (el.textContent === text) el.textContent = ""; }, 2500);
 }
 
+// === Track edit modal ===
+let editingTrackId = null;
+
+function openTrackEdit(trackId) {
+  const t = tracks.find((x) => x.id === trackId);
+  if (!t) return;
+  editingTrackId = trackId;
+  $("track-edit-err").textContent = "";
+  $("track-edit-title").value = t.title || "";
+  $("track-edit-artist").value = t.artist || "";
+  $("track-edit-meta").textContent = `时长 ${Math.round(t.duration_ms / 1000)}s · ${(t.size_bytes / 1024 / 1024).toFixed(1)} MB`;
+  $("track-edit-modal").hidden = false;
+  setTimeout(() => $("track-edit-title").focus(), 30);
+}
+
+function closeTrackEdit() {
+  $("track-edit-modal").hidden = true;
+  $("track-edit-err").textContent = "";
+  editingTrackId = null;
+}
+
+async function saveTrackEdit(ev) {
+  ev.preventDefault();
+  if (!editingTrackId) return;
+  const title = $("track-edit-title").value.trim();
+  const artist = $("track-edit-artist").value.trim();
+  if (!title) { $("track-edit-err").textContent = "标题不能为空"; return; }
+  try {
+    await api(`/api/tracks/${editingTrackId}`, {
+      method: "PATCH",
+      json: { title, artist: artist || null },
+    });
+    closeTrackEdit();
+    await refreshTracks();
+    await refreshPlayback();
+  } catch (e) {
+    $("track-edit-err").textContent = e.message;
+  }
+}
+
+// === Queue drag-and-drop reorder ===
+let dragSrcId = null;
+
+function bindQueueDrag() {
+  const ql = $("queue-list");
+  const items = ql.querySelectorAll(".queue-item");
+  items.forEach((li) => {
+    li.addEventListener("dragstart", (e) => {
+      dragSrcId = li.dataset.trackId;
+      li.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", dragSrcId);
+    });
+    li.addEventListener("dragend", () => {
+      li.classList.remove("dragging");
+      ql.querySelectorAll(".drop-target").forEach((el) => el.classList.remove("drop-target"));
+      dragSrcId = null;
+    });
+    li.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      ql.querySelectorAll(".drop-target").forEach((el) => el.classList.remove("drop-target"));
+      li.classList.add("drop-target");
+    });
+    li.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      const src = e.dataTransfer.getData("text/plain") || dragSrcId;
+      const dst = li.dataset.trackId;
+      if (!src || !dst || src === dst) return;
+      // 拿到当前 queue（DOM 顺序即为视觉顺序）
+      const ids = [...ql.querySelectorAll(".queue-item")].map((el) => el.dataset.trackId);
+      const srcIdx = ids.indexOf(src);
+      const dstIdx = ids.indexOf(dst);
+      if (srcIdx < 0 || dstIdx < 0) return;
+      // 重排：把 src 移到 dst 之后（视觉上）
+      const arr = ids.slice();
+      const [moved] = arr.splice(srcIdx, 1);
+      arr.splice(dstIdx, 0, moved);
+      try {
+        await api(`/api/zones/${currentZoneId}/queue/replace`, {
+          method: "POST",
+          json: { trackIds: arr },
+        });
+        await refreshPlayback();
+      } catch (err) { alert(err.message); }
+    });
+  });
+}
+
 function renderZonesModal() {
   const ul = $("zones-list");
   ul.innerHTML = "";
@@ -679,6 +801,12 @@ async function bootDashboard() {
     };
   }
   renderModeSwitch();
+
+  // 曲目编辑弹窗
+  $("track-edit-close").onclick = closeTrackEdit;
+  $("track-edit-cancel").onclick = closeTrackEdit;
+  $("track-edit-modal").addEventListener("click", (e) => { if (e.target.id === "track-edit-modal") closeTrackEdit(); });
+  $("track-edit-form").addEventListener("submit", saveTrackEdit);
 
   $("zone-add-btn").onclick = async () => {
     const name = prompt("新分区名称");

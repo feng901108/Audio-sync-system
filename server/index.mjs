@@ -253,6 +253,33 @@ route("DELETE", "/api/tracks/:id", async (req, res, params) => {
   sendJson(res, 200, { ok: true });
 }, { requireAuth: true });
 
+route("PATCH", "/api/tracks/:id", async (req, res, params) => {
+  const row = db.prepare("SELECT * FROM tracks WHERE id = ?").get(params.id);
+  if (!row) return sendJson(res, 404, { error: "曲目不存在" });
+  const { title, artist } = await readJson(req);
+  const updates = [];
+  const values = [];
+  if (title !== undefined) {
+    const t = String(title).trim();
+    if (!t) return sendJson(res, 400, { error: "title 不能为空" });
+    if (t.length > 200) return sendJson(res, 400, { error: "title 过长（≤200）" });
+    updates.push("title = ?"); values.push(t);
+  }
+  if (artist !== undefined) {
+    const a = String(artist).trim() || null;
+    if (a && a.length > 200) return sendJson(res, 400, { error: "artist 过长（≤200）" });
+    updates.push("artist = ?"); values.push(a);
+  }
+  if (updates.length === 0) return sendJson(res, 400, { error: "无可更新字段（需 title 或 artist）" });
+  values.push(params.id);
+  db.prepare(`UPDATE tracks SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  const updated = db.prepare("SELECT * FROM tracks WHERE id = ?").get(params.id);
+  sendJson(res, 200, {
+    ok: true,
+    track: { ...updated, duration_ms: Number(updated.duration_ms), size_bytes: Number(updated.size_bytes), uploaded_at: Number(updated.uploaded_at) },
+  });
+}, { requireAuth: true });
+
 route("GET", "/api/devices", async (_req, res) => {
   const rows = db.prepare("SELECT * FROM devices ORDER BY last_seen_at DESC").all();
   const online = new Set(hub.onlineDeviceIds());
