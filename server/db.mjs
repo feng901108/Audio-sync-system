@@ -44,7 +44,21 @@ CREATE TABLE IF NOT EXISTS playback_state (
   track_offset_ms INTEGER NOT NULL DEFAULT 0,
   is_playing INTEGER NOT NULL DEFAULT 0,
   queue_json TEXT NOT NULL DEFAULT '[]',
+  mode TEXT NOT NULL DEFAULT 'sequential',
   updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS playlists (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  builtin INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS playlist_tracks (
+  playlist_id INTEGER NOT NULL,
+  track_id TEXT NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  added_at INTEGER NOT NULL,
+  PRIMARY KEY (playlist_id, track_id)
 );
 CREATE TABLE IF NOT EXISTS sessions (
   sid TEXT PRIMARY KEY,
@@ -56,3 +70,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 INSERT OR IGNORE INTO zones (id, name, builtin, created_at) VALUES (1, '默认分区', 1, 0);
 INSERT OR IGNORE INTO playback_state (zone_id, is_playing, updated_at) VALUES (1, 0, 0);
 `);
+
+// 老 db 兼容：playback_state 缺 mode 列则补上（独立 try/catch）
+try { db.exec("ALTER TABLE playback_state ADD COLUMN mode TEXT NOT NULL DEFAULT 'sequential'"); } catch {}
