@@ -1,7 +1,8 @@
 # 聚光广播 · Docker 部署手册（fnOS 飞牛 NAS）
 
 > 部署目标：飞牛 NAS (fnOS) · Intel Celeron J3455 (x86_64) · 12 GB 内存 · 10.92 TB HDD
-> 网络拓扑：本机 → GitHub → NAS Web Terminal → `git pull` + `docker compose up`
+> 网络拓扑：本机 → GitHub → NAS WebDAV/Web Terminal → Docker 应用
+> 公网访问：FN Connect 反代（`https://5ddd.com/spotlightculture:3000`）
 
 ---
 
@@ -9,20 +10,42 @@
 
 ### 0.1 NAS 上确认 Docker 已装
 
-登录 `https://5ddd.com/spotlightculture`（FN Connect 远程访问）→ 应用中心 → 搜 "Docker" → 安装。
+fnOS 桌面有 **Docker** 图标即表示已装。也可以登录 `https://5ddd.com/spotlightculture` → 应用中心 → 搜 "Docker"。
 
-如果应用中心没有：
-- Web Terminal 里执行：`sudo docker --version`（fnOS 的 sudo 默认免密）
-- 没有就装：`sudo apt update && sudo apt install -y docker.io docker-compose-plugin`
-- 验证：`sudo docker compose version`（要 v2，不是老版 `docker-compose`）
+如果应用中心没有 Docker 应用，桌面也没图标：
+- 桌面找 "应用中心" 或 Docker 应用（部分 fnOS 直接放桌面）
+- 联系 fnOS 客服 / 看官方文档
 
 ### 0.2 确认存储池路径
 
-`存储空间管理` 看挂在哪个路径下。fnOS 默认 `/vol1/1000/`（每个用户独立）。本手册用 `/vol1/1000/juguang`。
+`系统设置 → 存储空间管理` 看挂在哪个路径下。fnOS 默认 `/vol1/1000/`（每个用户独立）。
+本手册用 `/vol1/1000/juguang`。
 
-### 0.3 SSH 状态
+### 0.3 镜像源（**关键**）
 
-`系统设置 → SSH`：保持启用，端口 22。本手册不用 SSH 22（你本机到 NAS 网络不通），但保留启用方便以后 web terminal 调用。
+fnOS Docker daemon 默认走私有 registry `docker.fnnas.com`，对 `library/*` 镜像返回 401。
+**不要用** 阿里云 `registry.cn-hangzhou.aliyuncs.com/library/node`（也 401，insufficient_scope）。
+**用** DaoCloud 公益镜像：`docker.m.daocloud.io/library/node:24-alpine`。
+
+本项目 `Dockerfile` 已默认配置 NODE_IMAGE 走 DaoCloud。如果还不行，按顺序换：
+1. `docker.m.daocloud.io/library/node:24-alpine` （默认，已验证）
+2. `docker.mirrors.ustc.edu.cn/library/node:24-alpine`
+3. `dockerproxy.com/library/node:24-alpine`
+
+改一处即可：`Dockerfile` 第 6 行 `ARG NODE_IMAGE=...` 和 `docker-compose*.yml` 里的 `NODE_IMAGE:`。
+
+### 0.4 文件传输（**关键**）
+
+本机到 NAS 网络**不通**（不同子网）。SSH 22 也连不上。文件传输走 **WebDAV**：
+
+**WebDAV 挂载**：
+- 浏览器打开 `https://dav.spotlightculture.5ddd.com:443`（登录你的 fnOS 账号）
+- 或 Windows 资源管理器 → "映射网络驱动器" → 文件夹填上面 URL → 驱动器选 `Z:`
+- 挂载后 `Z:\juguang\` 就是 NAS 上的 `/vol1/1000/juguang/`
+
+### 0.5 SSH 状态
+
+`系统设置 → SSH`：保持启用，端口 22。本手册主流程不依赖 SSH，但保留以便日后调试。
 
 ---
 
@@ -30,69 +53,84 @@
 
 ### 1.1 创建部署目录
 
-在 NAS **Web Terminal**（应用中心装 "终端" 应用）执行：
+**方法 A：WebDAV 挂载后在本机创建**
+- 在 `Z:\juguang\` 下右键新建 `data` 文件夹
+- 创建后 `/vol1/1000/juguang/data/` 就存在
+
+**方法 B：Docker 应用自带终端**
+- 打开 Docker 应用 → 容器标签 → 任意容器（甚至只是新建空容器）的终端
+- 执行：`mkdir -p /vol1/1000/juguang/data`
+
+### 1.2 上传代码（**WebDAV 方式**）
+
+**WebDAV 已挂载 `Z:` 后**（参见 §0.4）：
 
 ```bash
-# 创建目录
-mkdir -p /vol1/1000/juguang/data
-cd /vol1/1000/juguang
+# 在本机执行：
+# 1. 从 GitHub 下载或 git clone 出整个项目目录
+# 2. 拷贝以下文件/目录到 Z:\juguang\
+#    - Dockerfile
+#    - docker-compose.yml
+#    - docker-compose.override.yml.example
+#    - .env.example（拷贝后改名为 .env）
+#    - .dockerignore
+#    - package.json
+#    - server/ 整个目录（8 个 .mjs 文件）
+#    - web/ 整个目录（4 个文件）
 ```
 
-### 1.2 拉代码
+**⚠️ 坑**：WebDAV 复制**空目录**没问题，但**大量小文件**可能漏传。复制后验证：
+- `Z:\juguang\server\` 下应有 8 个 `.mjs`
+- `Z:\juguang\web\` 下应有 4 个文件
+
+如果漏了，从本机 `cp -v` 补传。
+
+**为什么要 WebDAV 而不是 git clone**：
+fnOS Docker 应用内置终端只支持容器内 shell，**不能直接跑 git**（git 在 fnOS 基础镜像里可能没装）。
+WebDAV 一次性把所有文件传上去最稳。
+
+### 1.3 启动容器
+
+**Docker 应用 → Compose 标签 → 创建新项目**：
+- 项目名：`juguang`
+- 路径：`/vol1/1000/juguang`
+- 模式选"docker-compose"（YAML 文件）
+- 文件路径：`/vol1/1000/juguang/docker-compose.yml`
+
+启动 → 等待 build（首次 2-5 分钟，因为要下载 `node:24-alpine` 镜像 ~50MB + 构建）
+
+### 1.4 初始化管理员
+
+容器跑起来后，在 Docker 应用 → 容器标签 → 找到 `juguang` 容器：
+
+**点"终端"按钮**（如果你没看到这个按钮，说明 fnOS Docker UI 没暴露终端功能。备选：找"执行命令"或类似功能）
 
 ```bash
-# 第一次：克隆仓库
-git clone https://github.com/feng901108/Audio-sync-system.git .
-
-# 后续更新代码：git pull
-```
-
-### 1.3 准备运行时文件
-
-```bash
-# 复制环境变量模板
-cp .env.example .env
-
-# （可选）改端口：默认 3000
-# sed -i 's/JUGUANG_PORT=3000/JUGUANG_PORT=8080/' .env
-```
-
-### 1.4 启动容器
-
-```bash
-# 构建镜像并后台启动
-docker compose up -d --build
-
-# 跟踪启动日志（首次构建较慢，1-2 分钟）
-docker compose logs -f
-```
-
-看到 `聚光广播服务端已启动：http://localhost:3000` 就 OK 了，按 `Ctrl+C` 退出日志跟踪。
-
-### 1.5 初始化管理员
-
-```bash
-# 在容器内执行 init-admin（替换 your_password）
-docker compose exec juguang node server/init-admin.mjs admin your_password
-
+node server/init-admin.mjs admin your_password
 # 应输出：已创建管理员：admin / your_password
+# 当前管理员总数：1
 ```
 
-### 1.6 验证
+**⚠️ 坑**：**不要**手动跑 `node server/index.mjs &`，会 `EADDRINUSE`——容器已经在跑（Dockerfile CMD 启动的）。
 
+### 1.5 验证
+
+在容器终端里：
 ```bash
-# 健康检查
-curl http://localhost:3000/api/health
-# 应返回 {"ok":true,...,"serverIps":[...],"port":3000}
-
-# 看容器状态
-docker compose ps
-# STATUS 应是 Up (healthy)
+curl http://127.0.0.1:3000/api/health
+# 应返回 {"ok":true,...,"serverIps":[{"iface":"eth0","address":"172.19.0.2"}],"port":3000}
 ```
 
-浏览器访问（**注意：当前网络环境可能不行**）：
-- 内网：http://192.168.108.199:3000（同 WiFi）
-- 公网：需要 fnOS 反代或端口映射（参见 §6）
+### 1.6 浏览器访问
+
+按 fnOS FN Connect 配置：
+- **公网（推荐）**：`https://5ddd.com/spotlightculture:3000`
+- 内网（需要和 NAS 同子网）：`http://192.168.108.199:3000`
+
+打开后：
+- `/admin` → 登录 `admin / your_password` → 进入管理面板
+- `/` → 选 zone（默认 "默认分区"）→ 输入设备名 → 加入广播
+- 管理端上传一首 MP3 → 点 ▶ → 聆听端能否听到
 
 ---
 
@@ -230,15 +268,21 @@ docker compose up -d
 
 ## 6. 公网访问方案
 
-当前默认**仅内网**访问（http://192.168.108.199:3000）。
+### 6.1 FN Connect（**已验证可用**）
 
-### 6.1 FN Connect 反代（如果 fnOS 支持）
+fnOS 的 `https://5ddd.com/spotlightculture` 自带反代，**3000 端口可直接通过这个域名访问**：
 
-fnOS "远程访问 → FN Connect" 已经有 `https://5ddd.com/spotlightculture` 的 HTTPS 入口。
-如果 fnOS 支持加自定义子路径，可以加 `/juguang → http://juguang:3000`（容器名 juguang）。
-**问 fnOS 文档或客服确认**。
+```
+https://5ddd.com/spotlightculture:3000  →  NAS:3000 → juguang 容器
+```
 
-### 6.2 Cloudflare Tunnel（推荐，需公网域名）
+不需要额外配置，fnOS Docker 应用启动容器后自动注册反代规则。
+
+### 6.2 路由器端口映射
+
+路由器后台把 NAS 3000 端口映射到公网。**不推荐**——需要公网 IP + 防火墙配置，国内还要备案。
+
+### 6.3 Cloudflare Tunnel（如果以后换域名）
 
 如果以后有公网域名，加一个 `cloudflared` 容器进 docker-compose：
 
@@ -257,10 +301,6 @@ services:
 ```
 
 Cloudflare Dashboard 加路由：`juguang.example.com → http://juguang:3000`。
-
-### 6.3 路由器端口映射
-
-路由器后台把 NAS 3000 端口映射到公网。**不推荐**——需要公网 IP + 防火墙配置，国内还要备案。
 
 ---
 
