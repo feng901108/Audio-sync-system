@@ -45,6 +45,19 @@
       <nav id="zone-tabs" class="zone-tabs-compact" aria-label="分区切换"></nav>
 
       <div class="topbar-actions">
+        <!-- 播放模式：顺序 / 单曲循环 / 歌单循环 -->
+        <div id="mode-switch" class="mode-switch" role="radiogroup" aria-label="播放模式">
+          <button class="mode-switch-btn" data-mode="sequential" title="顺序播放">
+            <span class="ico">⇢</span><span>顺序</span>
+          </button>
+          <button class="mode-switch-btn" data-mode="loop-one" title="单曲循环">
+            <span class="ico">↻</span><span>单曲</span>
+          </button>
+          <button class="mode-switch-btn" data-mode="loop-all" title="歌单循环">
+            <span class="ico">⟲</span><span>歌单</span>
+          </button>
+        </div>
+        <button id="playlists-btn" class="btn btn-ghost" aria-label="歌单管理">歌单</button>
         <button id="zones-mgmt-btn" class="btn btn-ghost" aria-label="分区管理">
           <span aria-hidden="true">⚙</span> 分区
         </button>
@@ -63,9 +76,6 @@
               <span id="lib-title">曲库</span>
               <span class="muted" style="font-weight:400;font-size:13px;" id="lib-sub">全局共享</span>
             </h2>
-            <div class="panel-actions">
-              <button id="playlists-btn" class="btn btn-ghost">歌单</button>
-            </div>
           </header>
 
           <!-- 上传区（紧凑） -->
@@ -150,6 +160,61 @@
     </div>
   </div>
 
+  <!-- 歌单管理 弹窗（两级：列表 / 详情） -->
+  <div id="playlists-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-labelledby="playlists-modal-title" style="width:560px;">
+      <div class="modal-head">
+        <h3 id="playlists-modal-title" class="modal-title">歌单管理</h3>
+        <button id="playlists-close" class="icon-btn" aria-label="关闭">×</button>
+      </div>
+
+      <!-- 列表视图 -->
+      <div id="playlists-list-view">
+        <form id="playlist-create-form" class="upload" style="margin-bottom:var(--sp-3);">
+          <div class="field" style="flex-direction:row;gap:var(--sp-2);align-items:center;">
+            <input id="playlist-new-name" class="input" placeholder="新歌单名称" maxlength="32" style="flex:1;" />
+            <button type="submit" class="btn btn-primary" style="height:48px;">创建</button>
+          </div>
+        </form>
+        <div id="playlists-list"></div>
+        <p id="playlists-err" class="modal-error"></p>
+      </div>
+
+      <!-- 详情视图 -->
+      <div id="playlists-detail-view" hidden>
+        <div class="playlist-detail-head">
+          <div>
+            <h4 class="playlist-detail-name" id="pl-detail-name"></h4>
+            <div class="playlist-detail-sub" id="pl-detail-sub"></div>
+          </div>
+          <div style="display:flex;gap:var(--sp-2);">
+            <button id="pl-load-btn" class="btn btn-primary" style="height:36px;font-size:13px;" title="替换当前分区队列并播放">载入队列</button>
+            <button id="pl-back-btn" class="btn btn-ghost" style="height:36px;font-size:13px;">返回</button>
+          </div>
+        </div>
+        <div id="pl-tracks-list" style="margin-top:var(--sp-3);"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 「加入歌单」选择 弹窗 -->
+  <div id="picker-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-labelledby="picker-modal-title" style="width:420px;">
+      <div class="modal-head">
+        <h3 id="picker-modal-title" class="modal-title">加入歌单</h3>
+        <button id="picker-close" class="icon-btn" aria-label="关闭">×</button>
+      </div>
+      <div id="picker-list"></div>
+      <form id="picker-create-form" class="upload" style="margin-top:var(--sp-3);">
+        <div class="field" style="flex-direction:row;gap:var(--sp-2);align-items:center;">
+          <input id="picker-new-name" class="input" placeholder="或新建一个歌单…" maxlength="32" style="flex:1;" />
+          <button type="submit" class="btn btn-primary" style="height:48px;">+</button>
+        </div>
+      </form>
+      <p id="picker-err" class="modal-error"></p>
+    </div>
+  </div>
+
 <script type="module">
 const $ = (id) => document.getElementById(id);
 
@@ -168,8 +233,10 @@ async function api(path, init = {}) {
 
 let tracks = [];
 let zones = [];
+let playlists = [];
 let currentZoneId = null;
 let currentZoneName = "";
+let currentMode = "sequential";
 
 function renderZoneTabs() {
   const ul = $("zone-tabs");
@@ -228,6 +295,7 @@ async function refreshTracks() {
         <span class="muted mono-sm">${Math.round(t.duration_ms / 1000)}s</span>
         <button class="icon-btn primary" data-act="play" aria-label="播放" title="播放">▶</button>
         <button class="icon-btn" data-act="enqueue" aria-label="加入队列" title="加入队列">+</button>
+        <button class="icon-btn" data-act="add-to-pl" aria-label="加入歌单" title="加入歌单">♡</button>
         <button class="icon-btn danger" data-act="del" aria-label="删除" title="删除">✕</button>
       </div>`;
     li.querySelector(".list-item-title").textContent = t.title;
@@ -241,6 +309,7 @@ async function refreshTracks() {
       await api(`${zonePath}/queue/enqueue`, { method: "POST", json: { trackIds: [t.id] } });
       refreshPlayback();
     };
+    li.querySelector('[data-act="add-to-pl"]').onclick = () => openAddToPlaylistPicker(t.id);
     li.querySelector('[data-act="del"]').onclick = async () => {
       if (!confirm(`删除「${t.title}」？`)) return;
       await api(`/api/tracks/${t.id}`, { method: "DELETE" });
@@ -294,6 +363,12 @@ async function refreshPlayback() {
   $("now-pos").textContent = String(Math.max(0, Math.round(pos)));
   $("now-state").textContent = s.isPlaying ? "播放中" : s.track ? "已暂停" : "空闲";
 
+  // 模式切换高亮
+  if (s.mode && s.mode !== currentMode) {
+    currentMode = s.mode;
+    renderModeSwitch();
+  }
+
   const ql = $("queue-list");
   ql.innerHTML = "";
   if (s.queue.length === 0) {
@@ -310,6 +385,12 @@ async function refreshPlayback() {
   }
 }
 
+function renderModeSwitch() {
+  for (const b of document.querySelectorAll("#mode-switch .mode-switch-btn")) {
+    b.classList.toggle("active", b.dataset.mode === currentMode);
+  }
+}
+
 function bindZoneControls() {
   $("btn-pause").onclick = async () => { await api(`/api/zones/${currentZoneId}/playback/pause`, { method: "POST" }); refreshPlayback(); };
   $("btn-resume").onclick = async () => { await api(`/api/zones/${currentZoneId}/playback/resume`, { method: "POST" }); refreshPlayback(); };
@@ -323,6 +404,166 @@ function openZonesModal() {
   $("zones-modal").hidden = false;
 }
 function closeZonesModal() { $("zones-modal").hidden = true; $("zones-err").textContent = ""; }
+
+// === Playlists ===
+async function refreshPlaylists() {
+  const r = await api("/api/playlists");
+  playlists = r.playlists;
+}
+
+function openPlaylistsModal() {
+  $("playlists-err").textContent = "";
+  $("playlist-new-name").value = "";
+  $("playlists-detail-view").hidden = true;
+  $("playlists-list-view").hidden = false;
+  renderPlaylistsList();
+  $("playlists-modal").hidden = false;
+}
+function closePlaylistsModal() {
+  $("playlists-modal").hidden = true;
+  $("playlists-err").textContent = "";
+}
+
+function renderPlaylistsList() {
+  const wrap = $("playlists-list");
+  wrap.innerHTML = "";
+  if (playlists.length === 0) {
+    wrap.innerHTML = '<div class="playlist-tracks-empty">还没有歌单，创建一个吧</div>';
+    return;
+  }
+  for (const p of playlists) {
+    const row = document.createElement("div");
+    row.className = "playlist-row";
+    row.innerHTML = `
+      <div class="playlist-row-main">
+        <div class="playlist-row-title"></div>
+        <div class="playlist-row-sub">${p.trackCount} 首</div>
+      </div>
+      <div class="playlist-row-actions">
+        <button class="icon-btn" data-act="rename" aria-label="改名" title="改名">✎</button>
+        <button class="icon-btn danger" data-act="del" aria-label="删除" title="删除">✕</button>
+      </div>`;
+    row.querySelector(".playlist-row-title").textContent = p.name;
+    // 整行点击 = 进入详情（除按钮外）
+    row.onclick = (ev) => {
+      if (ev.target.closest(".icon-btn")) return;
+      openPlaylistDetail(p.id);
+    };
+    row.querySelector('[data-act="rename"]').onclick = async () => {
+      const name = prompt("新歌单名", p.name);
+      if (!name) return;
+      try { await api(`/api/playlists/${p.id}`, { method: "PATCH", json: { name } }); }
+      catch (e) { $("playlists-err").textContent = e.message; return; }
+      await refreshPlaylists();
+      renderPlaylistsList();
+    };
+    row.querySelector('[data-act="del"]').onclick = async () => {
+      if (!confirm(`删除歌单「${p.name}」？此操作不会删除曲目本身。`)) return;
+      try { await api(`/api/playlists/${p.id}`, { method: "DELETE" }); }
+      catch (e) { $("playlists-err").textContent = e.message; return; }
+      await refreshPlaylists();
+      renderPlaylistsList();
+    };
+    wrap.appendChild(row);
+  }
+}
+
+async function openPlaylistDetail(playlistId) {
+  $("playlists-list-view").hidden = true;
+  $("playlists-detail-view").hidden = false;
+  const r = await api(`/api/playlists/${playlistId}/tracks`);
+  const p = r.playlist;
+  const tracks = r.tracks;
+  $("pl-detail-name").textContent = p.name;
+  $("pl-detail-sub").textContent = `${tracks.length} 首 · #${p.id}`;
+  const wrap = $("pl-tracks-list");
+  wrap.innerHTML = "";
+  if (tracks.length === 0) {
+    wrap.innerHTML = '<div class="playlist-tracks-empty">歌单为空</div>';
+  } else {
+    for (const t of tracks) {
+      const row = document.createElement("div");
+      row.className = "playlist-track-row";
+      row.innerHTML = `
+        <span class="track-name"></span>
+        <span class="track-meta">${Math.round(t.duration_ms / 1000)}s</span>
+        <button class="icon-btn danger" data-act="remove" aria-label="从歌单移除" title="从歌单移除">✕</button>`;
+      row.querySelector(".track-name").textContent = t.title || t.id;
+      row.querySelector('[data-act="remove"]').onclick = async () => {
+        await api(`/api/playlists/${p.id}/tracks/${t.id}`, { method: "DELETE" });
+        openPlaylistDetail(p.id);
+        await refreshPlaylists();
+      };
+      wrap.appendChild(row);
+    }
+  }
+  $("pl-load-btn").onclick = async () => {
+    if (!currentZoneId) return;
+    try {
+      await api(`/api/zones/${currentZoneId}/queue/load-playlist`, {
+        method: "POST", json: { playlistId: p.id }
+      });
+      closePlaylistsModal();
+      await refreshPlayback();
+    } catch (e) { $("playlists-err").textContent = e.message; }
+  };
+  $("pl-back-btn").onclick = () => {
+    $("playlists-detail-view").hidden = true;
+    $("playlists-list-view").hidden = false;
+    renderPlaylistsList();
+  };
+}
+
+// === Add-to-playlist picker ===
+let pickerTargetTrackId = null;
+
+function openAddToPlaylistPicker(trackId) {
+  pickerTargetTrackId = trackId;
+  $("picker-err").textContent = "";
+  $("picker-new-name").value = "";
+  renderPickerList();
+  $("picker-modal").hidden = false;
+}
+function closePickerModal() {
+  $("picker-modal").hidden = true;
+  pickerTargetTrackId = null;
+}
+
+function renderPickerList() {
+  const wrap = $("picker-list");
+  wrap.innerHTML = "";
+  if (playlists.length === 0) {
+    wrap.innerHTML = '<div class="playlist-tracks-empty">还没有歌单，先在下面建一个</div>';
+    return;
+  }
+  for (const p of playlists) {
+    const row = document.createElement("div");
+    row.className = "picker-row";
+    row.innerHTML = `
+      <div>
+        <div class="picker-title"></div>
+        <div class="picker-sub">${p.trackCount} 首</div>
+      </div>
+      <span class="picker-plus">+</span>`;
+    row.querySelector(".picker-title").textContent = p.name;
+    row.onclick = async () => {
+      try {
+        await api(`/api/playlists/${p.id}/tracks`, { method: "POST", json: { trackIds: [pickerTargetTrackId] } });
+        closePickerModal();
+        await refreshPlaylists();
+        flashUploadStatus(`✓ 已加入「${p.name}」`);
+      } catch (e) { $("picker-err").textContent = e.message; }
+    };
+    wrap.appendChild(row);
+  }
+}
+
+function flashUploadStatus(text) {
+  const el = $("upload-status");
+  if (!el) return;
+  el.textContent = text;
+  setTimeout(() => { if (el.textContent === text) el.textContent = ""; }, 2500);
+}
 
 function renderZonesModal() {
   const ul = $("zones-list");
@@ -395,6 +636,52 @@ async function bootDashboard() {
   $("zones-close").onclick = closeZonesModal;
   $("zones-modal").addEventListener("click", (e) => { if (e.target.id === "zones-modal") closeZonesModal(); });
 
+  // 歌单 + 加入歌单弹窗
+  $("playlists-btn").onclick = openPlaylistsModal;
+  $("playlists-close").onclick = closePlaylistsModal;
+  $("playlists-modal").addEventListener("click", (e) => { if (e.target.id === "playlists-modal") closePlaylistsModal(); });
+  $("playlist-create-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const name = $("playlist-new-name").value.trim();
+    if (!name) return;
+    try {
+      await api("/api/playlists", { method: "POST", json: { name } });
+      $("playlist-new-name").value = "";
+      await refreshPlaylists();
+      renderPlaylistsList();
+    } catch (e) { $("playlists-err").textContent = e.message; }
+  });
+
+  $("picker-close").onclick = closePickerModal;
+  $("picker-modal").addEventListener("click", (e) => { if (e.target.id === "picker-modal") closePickerModal(); });
+  $("picker-create-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const name = $("picker-new-name").value.trim();
+    if (!name || !pickerTargetTrackId) return;
+    try {
+      const r = await api("/api/playlists", { method: "POST", json: { name } });
+      await api(`/api/playlists/${r.playlist.id}/tracks`, { method: "POST", json: { trackIds: [pickerTargetTrackId] } });
+      closePickerModal();
+      await refreshPlaylists();
+      flashUploadStatus(`✓ 已加入「${name}」`);
+    } catch (e) { $("picker-err").textContent = e.message; }
+  });
+
+  // 模式切换
+  for (const b of document.querySelectorAll("#mode-switch .mode-switch-btn")) {
+    b.onclick = async () => {
+      if (!currentZoneId) return;
+      const mode = b.dataset.mode;
+      try {
+        await api(`/api/zones/${currentZoneId}/playback/mode`, { method: "PATCH", json: { mode } });
+        currentMode = mode;
+        renderModeSwitch();
+        flashUploadStatus(`✓ 模式：${b.textContent.trim()}`);
+      } catch (e) { alert(e.message); }
+    };
+  }
+  renderModeSwitch();
+
   $("zone-create-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const name = $("zone-new-name").value.trim();
@@ -433,11 +720,9 @@ async function bootDashboard() {
   );
   uploadDrop.addEventListener("drop", (e) => handleFiles([...e.dataTransfer.files]));
 
-  // 歌单按钮（暂未实现）
-  $("playlists-btn").onclick = () => alert("歌单功能在 commit 3 中实现");
-
   await refreshTracks();
   await refreshZones();
+  await refreshPlaylists();
   setInterval(() => { refreshPlayback(); refreshZoneDevices(); }, 2000);
 }
 

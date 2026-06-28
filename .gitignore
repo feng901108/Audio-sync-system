@@ -17,3 +17,8 @@ Snipaste_*.jpg
 Snipaste_*.png
 Screenshot*.png
 
+# 本机 / NAS 的一次性脚本（不进 git；只保留 scripts/deploy.sh 作为统一入口）
+/deploy.sh
+/.nas-setup.sh
+/deploy.cmd
+
