@@ -6,7 +6,7 @@
 <title>聚光广播 · 管理</title>
 <link rel="stylesheet" href="/styles.css" />
 </head>
-<body class="admin-page">
+<body class="admin-page admin-compact">
 
   <!-- login -->
   <section id="login-screen" class="login-screen">
@@ -32,78 +32,107 @@
     </div>
   </section>
 
-  <!-- dashboard -->
-  <main id="dashboard" class="dashboard" hidden>
+  <!-- dashboard: 单屏布局 -->
+  <main id="dashboard" class="dashboard-compact" hidden>
 
-    <header class="topbar">
-      <h1 class="topbar-title">聚光广播 · 管理</h1>
-      <div class="topbar-actions">
-        <button id="zones-btn" class="btn btn-ghost">分区管理</button>
+    <!-- 顶栏：标题 + 分区 tab + 操作 -->
+    <header class="topbar-compact">
+      <div class="topbar-left">
+        <h1 class="topbar-title">聚光广播</h1>
         <span class="topbar-who" id="who"></span>
+      </div>
+
+      <nav id="zone-tabs" class="zone-tabs-compact" aria-label="分区切换"></nav>
+
+      <div class="topbar-actions">
+        <button id="zones-mgmt-btn" class="btn btn-ghost" aria-label="分区管理">
+          <span aria-hidden="true">⚙</span> 分区
+        </button>
         <button id="logout-btn" class="btn btn-ghost">登出</button>
       </div>
     </header>
 
-    <nav id="zone-tabs" class="zone-tabs" aria-label="分区切换"></nav>
+    <!-- 左右两列 -->
+    <div class="layout-compact">
 
-    <!-- hero "now playing" panel -->
-    <section class="now-panel">
-      <div class="now-panel-info">
-        <div class="now-panel-eyebrow">
-          正在播放 · <span id="zone-label">—</span>
+      <!-- 左列：曲库管理（占大头） -->
+      <section class="col col-main">
+        <div class="panel">
+          <header class="panel-head">
+            <h2 class="panel-title">
+              <span id="lib-title">曲库</span>
+              <span class="muted" style="font-weight:400;font-size:13px;" id="lib-sub">全局共享</span>
+            </h2>
+            <div class="panel-actions">
+              <button id="playlists-btn" class="btn btn-ghost">歌单</button>
+            </div>
+          </header>
+
+          <!-- 上传区（紧凑） -->
+          <form id="upload-form" class="upload-compact">
+            <label class="upload-drop-compact" id="upload-drop">
+              <input id="upload-file" type="file" accept="audio/*" multiple />
+              <span class="upload-drop-text">
+                <strong>点击或拖入文件</strong>
+                <span class="muted">支持多选 · MP3 / M4A / AAC / OGG / WAV / FLAC</span>
+              </span>
+            </label>
+            <div class="upload-progress" id="upload-progress">
+              <div class="upload-progress-fill" id="upload-progress-fill"></div>
+            </div>
+            <p id="upload-status" class="upload-status muted"></p>
+          </form>
+
+          <ul id="track-list" class="list list-compact"></ul>
         </div>
-        <h2 class="now-panel-title" id="now-title">空闲</h2>
-        <p class="now-panel-artist" id="now-artist"></p>
-        <div class="now-panel-meta">
-          <span>位置 <span class="accent" id="now-pos">0</span> ms</span>
-          <span>时长 <span id="now-dur">0</span> ms</span>
-          <span>状态 <span id="now-state">—</span></span>
-        </div>
-      </div>
-      <div class="now-panel-controls">
-        <button id="btn-pause" class="btn">暂停</button>
-        <button id="btn-resume" class="btn">继续</button>
-        <button id="btn-next" class="btn">下一首</button>
-        <button id="btn-stop" class="btn">停止</button>
-      </div>
-    </section>
+      </section>
 
-    <!-- 3-column panels -->
-    <section class="grid">
+      <!-- 右列：现在播放 + 队列 + 设备（紧凑） -->
+      <aside class="col col-side">
 
-      <!-- tracks -->
-      <div class="panel">
-        <h3 class="panel-title">曲库</h3>
-        <form id="upload-form" class="upload">
-          <label class="upload-drop" id="upload-drop">
-            <input id="upload-file" type="file" accept="audio/*" multiple />
-            拖入文件 或 点击上传
-          </label>
-          <div class="upload-progress" id="upload-progress">
-            <div class="upload-progress-fill" id="upload-progress-fill"></div>
+        <!-- now playing -->
+        <div class="panel panel-now">
+          <div class="now-panel-eyebrow">
+            <span class="muted">正在播放 · </span>
+            <span id="zone-label">—</span>
           </div>
-          <p id="upload-status" class="muted" style="font-size:12px;margin:0;"></p>
-        </form>
-        <ul id="track-list" class="list"></ul>
-      </div>
+          <h2 class="now-panel-title" id="now-title">空闲</h2>
+          <p class="now-panel-artist" id="now-artist"></p>
+          <div class="now-panel-meta">
+            <span><span class="accent" id="now-pos">0</span><span class="muted"> ms</span></span>
+            <span><span class="muted">状态 </span><span id="now-state">—</span></span>
+          </div>
+          <div class="now-panel-controls">
+            <button id="btn-pause" class="btn btn-icon" aria-label="暂停" title="暂停">⏸</button>
+            <button id="btn-resume" class="btn btn-icon" aria-label="继续" title="继续">▶</button>
+            <button id="btn-next" class="btn btn-icon" aria-label="下一首" title="下一首">⏭</button>
+            <button id="btn-stop" class="btn btn-icon" aria-label="停止" title="停止">⏹</button>
+          </div>
+        </div>
 
-      <!-- queue -->
-      <div class="panel">
-        <h3 class="panel-title" id="queue-title">播放队列</h3>
-        <ul id="queue-list" class="list"></ul>
-        <button id="clear-queue" class="btn btn-ghost">清空队列</button>
-      </div>
+        <!-- 队列 -->
+        <div class="panel">
+          <header class="panel-head">
+            <h3 class="panel-title-sm">播放队列</h3>
+            <button id="clear-queue" class="btn btn-ghost" style="height:28px;font-size:12px;padding:0 10px;">清空</button>
+          </header>
+          <ul id="queue-list" class="list list-compact"></ul>
+        </div>
 
-      <!-- devices -->
-      <div class="panel">
-        <h3 class="panel-title">本分区设备</h3>
-        <ul id="device-list" class="list"></ul>
-      </div>
+        <!-- 设备 -->
+        <div class="panel">
+          <header class="panel-head">
+            <h3 class="panel-title-sm">设备</h3>
+            <span class="muted" style="font-size:11px;" id="device-count">0 台</span>
+          </header>
+          <ul id="device-list" class="list list-compact"></ul>
+        </div>
 
-    </section>
+      </aside>
+    </div>
   </main>
 
-  <!-- zones modal -->
+  <!-- 分区管理 弹窗 -->
   <div id="zones-modal" class="modal-backdrop" hidden>
     <div class="modal" role="dialog" aria-labelledby="zones-modal-title">
       <div class="modal-head">
@@ -115,7 +144,7 @@
         <div class="field">
           <input id="zone-new-name" class="input" placeholder="新分区名称" maxlength="32" />
         </div>
-        <button type="submit" class="btn btn-primary" style="height:44px;">创建</button>
+        <button type="submit" class="btn btn-primary" style="height:44px;">创建分区</button>
       </form>
       <p id="zones-err" class="modal-error"></p>
     </div>
@@ -142,7 +171,18 @@ let zones = [];
 let currentZoneId = null;
 let currentZoneName = "";
 
-async function loadServerAddrs() { /* 留空 */ }
+function renderZoneTabs() {
+  const ul = $("zone-tabs");
+  ul.innerHTML = "";
+  for (const z of zones) {
+    const b = document.createElement("button");
+    b.className = "zone-tab" + (z.id === currentZoneId ? " active" : "");
+    b.textContent = z.name + (z.builtin ? "" : "");
+    b.title = z.builtin ? "默认分区" : `分区 #${z.id}`;
+    b.onclick = () => switchZone(z.id);
+    ul.appendChild(b);
+  }
+}
 
 async function refreshZones() {
   const r = await api("/api/zones");
@@ -157,25 +197,11 @@ async function refreshZones() {
   }
 }
 
-function renderZoneTabs() {
-  const ul = $("zone-tabs");
-  ul.innerHTML = "";
-  for (const z of zones) {
-    const b = document.createElement("button");
-    b.className = "zone-tab" + (z.id === currentZoneId ? " active" : "");
-    b.textContent = z.name;
-    b.title = z.builtin ? "默认分区" : `分区 #${z.id}`;
-    b.onclick = () => switchZone(z.id);
-    ul.appendChild(b);
-  }
-}
-
 function switchZone(zoneId) {
   currentZoneId = zoneId;
   const z = zones.find((x) => x.id === zoneId);
   currentZoneName = z?.name ?? "";
   $("zone-label").textContent = currentZoneName || "—";
-  $("queue-title").textContent = `播放队列（${currentZoneName || "—"}）`;
   renderZoneTabs();
   refreshPlayback();
   refreshZoneDevices();
@@ -192,20 +218,20 @@ async function refreshTracks() {
   }
   for (const t of tracks) {
     const li = document.createElement("li");
-    li.className = "list-item";
+    li.className = "list-item list-item-compact";
     li.innerHTML = `
       <div class="list-item-main">
         <div class="list-item-title"></div>
         <div class="list-item-sub"></div>
       </div>
       <div class="list-item-actions">
-        <span class="muted" style="font-size:11px;font-variant-numeric:tabular-nums;">${Math.round(t.duration_ms / 1000)}s</span>
-        <button class="icon-btn primary" data-act="play" aria-label="播放">▶</button>
-        <button class="icon-btn" data-act="enqueue" aria-label="加入队列">+</button>
-        <button class="icon-btn danger" data-act="del" aria-label="删除">✕</button>
+        <span class="muted mono-sm">${Math.round(t.duration_ms / 1000)}s</span>
+        <button class="icon-btn primary" data-act="play" aria-label="播放" title="播放">▶</button>
+        <button class="icon-btn" data-act="enqueue" aria-label="加入队列" title="加入队列">+</button>
+        <button class="icon-btn danger" data-act="del" aria-label="删除" title="删除">✕</button>
       </div>`;
     li.querySelector(".list-item-title").textContent = t.title;
-    li.querySelector(".list-item-sub").textContent = t.artist ?? `${t.id.slice(0, 8)}…`;
+    li.querySelector(".list-item-sub").textContent = t.artist ?? t.id.slice(0, 8);
     const zonePath = currentZoneId ? `/api/zones/${currentZoneId}` : "/api/zones/1";
     li.querySelector('[data-act="play"]').onclick = async () => {
       await api(`${zonePath}/playback/play`, { method: "POST", json: { trackId: t.id } });
@@ -229,22 +255,22 @@ async function refreshZoneDevices() {
   const r = await api(`/api/zones/${currentZoneId}/devices`);
   const ul = $("device-list");
   ul.innerHTML = "";
+  $("device-count").textContent = `${r.devices.length} 台`;
   if (r.devices.length === 0) {
-    ul.innerHTML = '<li class="list-empty">本分区暂无设备</li>';
+    ul.innerHTML = '<li class="list-empty">暂无设备</li>';
     return;
   }
   for (const d of r.devices) {
     const li = document.createElement("li");
-    li.className = "list-item";
+    li.className = "list-item list-item-compact";
     li.innerHTML = `
       <div class="list-item-main">
         <div class="list-item-title"><span class="dot ${d.online ? "ok" : ""}"></span><span class="dname"></span></div>
         <div class="list-item-sub">${d.kind} · ${d.id.slice(0, 6)}${d.ip ? " · " + d.ip : ""}</div>
       </div>
       <div class="list-item-actions">
-        <input type="range" min="0" max="1" step="0.01" value="${d.volume}" style="width:80px;" aria-label="音量" />
-        <span class="muted" style="font-size:11px;font-variant-numeric:tabular-nums;min-width:32px;text-align:right;">${Math.round(d.volume * 100)}%</span>
-        <button class="icon-btn danger" data-act="remove" aria-label="移除">✕</button>
+        <input type="range" min="0" max="1" step="0.01" value="${d.volume}" style="width:70px;" aria-label="音量" />
+        <span class="muted mono-sm">${Math.round(d.volume * 100)}%</span>
       </div>`;
     li.querySelector(".dname").textContent = d.name;
     const range = li.querySelector("input");
@@ -253,11 +279,6 @@ async function refreshZoneDevices() {
     range.onchange = async () => {
       await api(`/api/devices/${d.id}`, { method: "PATCH", json: { volume: Number(range.value) } });
     };
-    li.querySelector('[data-act="remove"]').onclick = async () => {
-      if (!confirm(`移除「${d.name}」？`)) return;
-      await api(`/api/devices/${d.id}`, { method: "DELETE" });
-      await refreshZoneDevices();
-    };
     ul.appendChild(li);
   }
 }
@@ -265,16 +286,14 @@ async function refreshZoneDevices() {
 async function refreshPlayback() {
   if (currentZoneId == null) return;
   const s = await api(`/api/zones/${currentZoneId}/snapshot`);
-  const title = s.track?.title ?? "空闲";
-  const artist = s.track?.artist ?? "";
-  $("now-title").textContent = title;
-  $("now-artist").textContent = artist;
+  $("now-title").textContent = s.track?.title ?? "空闲";
+  $("now-artist").textContent = s.track?.artist ?? "";
   const pos = s.isPlaying && s.startServerTime
     ? s.trackOffsetMs + (s.serverTime - s.startServerTime)
     : s.trackOffsetMs;
   $("now-pos").textContent = String(Math.max(0, Math.round(pos)));
-  $("now-dur").textContent = String(s.track?.durationMs ?? 0);
   $("now-state").textContent = s.isPlaying ? "播放中" : s.track ? "已暂停" : "空闲";
+
   const ql = $("queue-list");
   ql.innerHTML = "";
   if (s.queue.length === 0) {
@@ -283,9 +302,9 @@ async function refreshPlayback() {
     s.queue.forEach((tid, idx) => {
       const t = tracks.find((x) => x.id === tid);
       const li = document.createElement("li");
-      li.className = "list-item";
-      li.innerHTML = `<div class="list-item-main"><div class="list-item-sub"></div></div>`;
-      li.querySelector(".list-item-sub").textContent = `${idx + 1}. ${t ? t.title : tid}`;
+      li.className = "list-item list-item-compact";
+      li.innerHTML = `<div class="list-item-main"><div class="list-item-sub">${idx + 1}. <span></span></div></div>`;
+      li.querySelector("span").textContent = t ? t.title : tid;
       ql.appendChild(li);
     });
   }
@@ -314,11 +333,11 @@ function renderZonesModal() {
     li.innerHTML = `
       <div class="list-item-main">
         <div class="list-item-title"></div>
-        <div class="list-item-sub">#${z.id} · ${z.builtin ? "内置" : "可管理"}</div>
+        <div class="list-item-sub">#${z.id} · ${z.builtin ? "内置默认分区" : "可管理"}</div>
       </div>
       <div class="list-item-actions">
-        <button class="icon-btn" data-act="rename" aria-label="改名">✎</button>
-        <button class="icon-btn danger" data-act="del" ${z.builtin ? "disabled" : ""} aria-label="删除">✕</button>
+        <button class="icon-btn" data-act="rename" aria-label="改名" title="改名">✎</button>
+        <button class="icon-btn danger" data-act="del" ${z.builtin ? "disabled" : ""} aria-label="删除" title="删除">✕</button>
       </div>`;
     li.querySelector(".list-item-title").textContent = z.name + (z.builtin ? "（默认）" : "");
     li.querySelector('[data-act="rename"]').onclick = async () => {
@@ -330,7 +349,7 @@ function renderZonesModal() {
       renderZonesModal();
     };
     li.querySelector('[data-act="del"]').onclick = async () => {
-      if (!confirm(`删除分区「${z.name}」？该分区设备将变为"未分区"。`)) return;
+      if (!confirm(`删除分区「${z.name}」？该分区的设备将变为"未分区"。`)) return;
       try { await api(`/api/zones/${z.id}`, { method: "DELETE" }); }
       catch (e) { $("zones-err").textContent = e.message; return; }
       await refreshZones();
@@ -340,7 +359,7 @@ function renderZonesModal() {
   }
 }
 
-async function uploadFile(file) {
+function uploadFile(file) {
   const fd = new FormData();
   fd.append("file", file);
   const xhr = new XMLHttpRequest();
@@ -351,7 +370,7 @@ async function uploadFile(file) {
       const pct = (ev.loaded / ev.total) * 100;
       $("upload-progress").classList.add("active");
       $("upload-progress-fill").style.width = `${pct}%`;
-      $("upload-status").textContent = `上传中 ${file.name} — ${pct.toFixed(0)}%`;
+      $("upload-status").textContent = `上传中：${file.name} — ${pct.toFixed(0)}%`;
     }
   };
   return new Promise((resolve, reject) => {
@@ -372,7 +391,7 @@ async function bootDashboard() {
   bindZoneControls();
 
   $("logout-btn").onclick = async () => { await api("/api/auth/logout", { method: "POST" }); location.reload(); };
-  $("zones-btn").onclick = openZonesModal;
+  $("zones-mgmt-btn").onclick = openZonesModal;
   $("zones-close").onclick = closeZonesModal;
   $("zones-modal").addEventListener("click", (e) => { if (e.target.id === "zones-modal") closeZonesModal(); });
 
@@ -389,7 +408,6 @@ async function bootDashboard() {
     } catch (e) { $("zones-err").textContent = e.message; }
   });
 
-  // 上传 — 支持多文件 + 进度条
   const uploadFileInput = $("upload-file");
   const uploadDrop = $("upload-drop");
   const handleFiles = async (files) => {
@@ -404,7 +422,7 @@ async function bootDashboard() {
       }
     }
     await refreshTracks();
-    $("upload-file").value = "";
+    uploadFileInput.value = "";
   };
   uploadFileInput.addEventListener("change", (e) => handleFiles([...e.target.files]));
   ["dragenter", "dragover"].forEach((ev) =>
@@ -415,6 +433,9 @@ async function bootDashboard() {
   );
   uploadDrop.addEventListener("drop", (e) => handleFiles([...e.dataTransfer.files]));
 
+  // 歌单按钮（暂未实现）
+  $("playlists-btn").onclick = () => alert("歌单功能在 commit 3 中实现");
+
   await refreshTracks();
   await refreshZones();
   setInterval(() => { refreshPlayback(); refreshZoneDevices(); }, 2000);
@@ -422,14 +443,14 @@ async function bootDashboard() {
 
 (async () => {
   const me = await api("/api/auth/me");
-  if (me.authenticated) { $("who").textContent = (me.username ?? "") + " "; bootDashboard(); return; }
+  if (me.authenticated) { $("who").textContent = me.username ?? ""; bootDashboard(); return; }
   $("login-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const u = $("username").value.trim(), p = $("password").value;
     if (!u || !p) { $("login-err").textContent = "用户名和密码必填"; return; }
     try {
       await api("/api/auth/login", { method: "POST", json: { username: u, password: p } });
-      $("who").textContent = u + " ";
+      $("who").textContent = u;
       bootDashboard();
     } catch (e) { $("login-err").textContent = e?.message ?? "登录失败"; }
   });

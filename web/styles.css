@@ -939,4 +939,198 @@ input[type="file"] {
 /* utility */
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
-.accent { color: var(--accent); }
+.mono-sm { font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+/* ============================================================
+   admin compact layout — single screen, no scroll
+   ============================================================ */
+.admin-compact {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dashboard-compact {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-4) var(--sp-5);
+  gap: var(--sp-3);
+  min-height: 0;
+}
+
+.topbar-compact {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--sp-4);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+}
+.topbar-compact .topbar-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+.topbar-compact .topbar-who {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.zone-tabs-compact {
+  display: flex;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.zone-tabs-compact .zone-tab {
+  height: 32px;
+  padding: 0 var(--sp-4);
+  font-size: 13px;
+}
+.topbar-compact .topbar-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.layout-compact {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(360px, 1fr);
+  gap: var(--sp-4);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.col { min-width: 0; display: flex; flex-direction: column; gap: var(--sp-3); min-height: 0; }
+.col-main { overflow: hidden; }
+.col-side { overflow-y: auto; }
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--sp-3);
+}
+
+.panel-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+}
+.panel-title-sm {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.panel-actions { display: flex; gap: var(--sp-2); }
+
+/* compact list item — single line, less padding */
+.list-compact {
+  gap: 0;
+  max-height: none;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.list-item-compact {
+  padding: var(--sp-2) var(--sp-3);
+  gap: var(--sp-3);
+  border-radius: var(--radius-sm);
+}
+.list-item-compact .list-item-title { font-size: 13.5px; }
+.list-item-compact .list-item-sub { font-size: 11.5px; margin-top: 0; }
+.list-item-compact .list-item-actions { gap: var(--sp-1); }
+.list-item-compact .icon-btn { width: 28px; height: 28px; }
+.list-item-compact .icon-btn::before, .list-item-compact .icon-btn { font-size: 13px; }
+
+/* compact upload */
+.upload-compact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+.upload-drop-compact {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  padding: var(--sp-4) var(--sp-4);
+  border: 1.5px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease),
+              background var(--t-fast) var(--ease);
+}
+.upload-drop-compact:hover, .upload-drop-compact.dragover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.upload-drop-compact input[type="file"] { display: none; }
+.upload-drop-compact .upload-drop-text { display: flex; flex-direction: column; gap: 2px; }
+.upload-drop-compact strong { font-size: 14px; font-weight: 500; color: var(--text); }
+.upload-drop-compact .muted { font-size: 11.5px; }
+
+.upload-status { font-size: 12px; margin: 0; min-height: 14px; }
+
+/* now panel compact (right column hero) */
+.panel-now {
+  background: linear-gradient(180deg, var(--accent-soft) 0%, var(--surface) 100%);
+  border-color: transparent;
+}
+.panel-now .now-panel-eyebrow { font-size: 10.5px; }
+.panel-now .now-panel-title {
+  font-size: 22px;
+  margin-bottom: 2px;
+}
+.panel-now .now-panel-artist { font-size: 13px; }
+.panel-now .now-panel-meta {
+  font-size: 11px;
+  gap: var(--sp-3);
+  margin: var(--sp-2) 0 var(--sp-3);
+}
+.panel-now .now-panel-controls {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-start;
+}
+.panel-now .btn-icon {
+  width: 36px;
+  height: 36px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 14px;
+}
+.panel-now .btn-icon:hover { background: var(--surface-hover); border-color: var(--accent); }
+
+/* responsive: stack on smaller screens */
+@media (max-width: 980px) {
+  .admin-compact { height: auto; overflow: auto; }
+  .layout-compact {
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+  .col-side { overflow-y: visible; }
+}

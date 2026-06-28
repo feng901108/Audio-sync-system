@@ -7,8 +7,11 @@ import { findAdminByUsername, verifyPassword, createSession, getSession, destroy
 import { handleUpgrade, hub, STALE_MS, SWEEP_INTERVAL_MS } from "./ws.mjs";
 import {
   setHub, snapshot, play, pause, resume, stop, seek, next,
-  enqueue, clearQueue, setQueue,
+  enqueue, clearQueue, setQueue, setMode,
   listZones, getZone, createZone, renameZone, deleteZone, assignDeviceZone,
+  listPlaylists, getPlaylist, createPlaylist, renamePlaylist, deletePlaylist,
+  listPlaylistTracks, addTracksToPlaylist, removeTrackFromPlaylist,
+  loadPlaylistToQueue,
 } from "./scheduler.mjs";
 import { parseMultipart } from "./multipart.mjs";
 import { probeAudioDuration } from "./audio-probe.mjs";
@@ -429,6 +432,50 @@ route("POST", "/api/zones/:zoneId/queue/clear", async (_req, res, params) => {
   if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
   if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
   respondResult(res, clearQueue(zid));
+}, { requireAuth: true });
+
+route("PATCH", "/api/zones/:zoneId/playback/mode", async (req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  const { mode } = await readJson(req);
+  respondResult(res, setMode(zid, mode));
+}, { requireAuth: true });
+
+route("POST", "/api/zones/:zoneId/queue/load-playlist", async (req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  const { playlistId } = await readJson(req);
+  respondResult(res, loadPlaylistToQueue(zid, Number(playlistId)));
+}, { requireAuth: true });
+
+// === Playlist 全局资源 ===
+route("GET", "/api/playlists", async (_req, res) => {
+  sendJson(res, 200, { playlists: listPlaylists() });
+});
+route("POST", "/api/playlists", async (req, res) => {
+  const { name } = await readJson(req);
+  respondResult(res, createPlaylist(name));
+}, { requireAuth: true });
+route("PATCH", "/api/playlists/:id", async (req, res, params) => {
+  const { name } = await readJson(req);
+  respondResult(res, renamePlaylist(Number(params.id), name));
+}, { requireAuth: true });
+route("DELETE", "/api/playlists/:id", async (_req, res, params) => {
+  respondResult(res, deletePlaylist(Number(params.id)));
+}, { requireAuth: true });
+route("GET", "/api/playlists/:id/tracks", async (_req, res, params) => {
+  const p = getPlaylist(Number(params.id));
+  if (!p) return sendJson(res, 404, { error: "歌单不存在" });
+  sendJson(res, 200, { playlist: p, tracks: listPlaylistTracks(Number(params.id)) });
+});
+route("POST", "/api/playlists/:id/tracks", async (req, res, params) => {
+  const { trackIds } = await readJson(req);
+  respondResult(res, addTracksToPlaylist(Number(params.id), trackIds));
+}, { requireAuth: true });
+route("DELETE", "/api/playlists/:id/tracks/:trackId", async (_req, res, params) => {
+  respondResult(res, removeTrackFromPlaylist(Number(params.id), params.trackId));
 }, { requireAuth: true });
 
 function matchRoute(method, pathname) {
