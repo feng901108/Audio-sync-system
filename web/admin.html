@@ -7,82 +7,120 @@
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body class="admin-page">
-<main id="app">
-  <section id="login" class="login">
-    <h1>聚光广播 · 管理</h1>
-    <input id="username" placeholder="用户名" autocomplete="username" />
-    <input id="password" placeholder="密码" type="password" autocomplete="current-password" />
-    <button id="login-btn">登录</button>
-    <p id="login-err" class="err"></p>
-    <p class="hint">首次使用请在服务器执行 <code>node server/init-admin.mjs admin yourpass</code></p>
+
+  <!-- login -->
+  <section id="login-screen" class="login-screen">
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="login-brand-mark">Juguang</div>
+        <h1 class="login-brand-title">聚光广播 · 管理</h1>
+      </div>
+      <form id="login-form" class="login-form" autocomplete="on">
+        <div class="field">
+          <input id="username" class="input" placeholder="用户名" autocomplete="username" />
+        </div>
+        <div class="field">
+          <input id="password" class="input" type="password" placeholder="密码" autocomplete="current-password" />
+        </div>
+        <button type="submit" class="btn btn-primary" style="height:48px;font-size:15px;margin-top:var(--sp-2);">登录</button>
+      </form>
+      <p id="login-err" class="login-error"></p>
+      <p class="login-hint">
+        首次使用请在服务器执行<br />
+        <code>node server/init-admin.mjs admin your_password</code>
+      </p>
+    </div>
   </section>
 
-  <section id="dashboard" hidden>
+  <!-- dashboard -->
+  <main id="dashboard" class="dashboard" hidden>
+
     <header class="topbar">
-      <h2>聚光广播管理</h2>
-      <div>
-        <button id="zones-btn" class="ghost">分区管理</button>
-        <span id="who"></span>
-        <button id="logout-btn">登出</button>
+      <h1 class="topbar-title">聚光广播 · 管理</h1>
+      <div class="topbar-actions">
+        <button id="zones-btn" class="btn btn-ghost">分区管理</button>
+        <span class="topbar-who" id="who"></span>
+        <button id="logout-btn" class="btn btn-ghost">登出</button>
       </div>
     </header>
-    <div id="server-addrs" class="server-addrs"></div>
 
     <nav id="zone-tabs" class="zone-tabs" aria-label="分区切换"></nav>
 
-    <section class="now">
-      <h3>当前播放 · <span id="zone-label">—</span></h3>
-      <div class="now-info">
-        <div id="now-title">—</div>
-        <div class="now-controls">
-          <button id="btn-pause">暂停</button>
-          <button id="btn-resume">继续</button>
-          <button id="btn-next">下一首</button>
-          <button id="btn-stop">停止</button>
+    <!-- hero "now playing" panel -->
+    <section class="now-panel">
+      <div class="now-panel-info">
+        <div class="now-panel-eyebrow">
+          正在播放 · <span id="zone-label">—</span>
+        </div>
+        <h2 class="now-panel-title" id="now-title">空闲</h2>
+        <p class="now-panel-artist" id="now-artist"></p>
+        <div class="now-panel-meta">
+          <span>位置 <span class="accent" id="now-pos">0</span> ms</span>
+          <span>时长 <span id="now-dur">0</span> ms</span>
+          <span>状态 <span id="now-state">—</span></span>
         </div>
       </div>
-      <div class="now-meta">
-        <span>位置：<b id="now-pos">0</b> / <b id="now-dur">0</b> ms</span>
-        <span>状态：<b id="now-state">—</b></span>
+      <div class="now-panel-controls">
+        <button id="btn-pause" class="btn">暂停</button>
+        <button id="btn-resume" class="btn">继续</button>
+        <button id="btn-next" class="btn">下一首</button>
+        <button id="btn-stop" class="btn">停止</button>
       </div>
     </section>
 
+    <!-- 3-column panels -->
     <section class="grid">
+
+      <!-- tracks -->
       <div class="panel">
-        <h3>曲库（全局共享）</h3>
+        <h3 class="panel-title">曲库</h3>
         <form id="upload-form" class="upload">
-          <input id="upload-file" type="file" accept="audio/*" />
-          <button type="submit">上传</button>
+          <label class="upload-drop" id="upload-drop">
+            <input id="upload-file" type="file" accept="audio/*" multiple />
+            拖入文件 或 点击上传
+          </label>
+          <div class="upload-progress" id="upload-progress">
+            <div class="upload-progress-fill" id="upload-progress-fill"></div>
+          </div>
+          <p id="upload-status" class="muted" style="font-size:12px;margin:0;"></p>
         </form>
         <ul id="track-list" class="list"></ul>
       </div>
+
+      <!-- queue -->
       <div class="panel">
-        <h3 id="queue-title">播放队列</h3>
+        <h3 class="panel-title" id="queue-title">播放队列</h3>
         <ul id="queue-list" class="list"></ul>
-        <button id="clear-queue">清空队列</button>
+        <button id="clear-queue" class="btn btn-ghost">清空队列</button>
       </div>
+
+      <!-- devices -->
       <div class="panel">
-        <h3>本分区设备</h3>
+        <h3 class="panel-title">本分区设备</h3>
         <ul id="device-list" class="list"></ul>
       </div>
-    </section>
-  </section>
 
-  <div id="zones-modal" class="modal" hidden>
-    <div class="modal-body">
-      <header class="modal-head">
-        <h3>分区管理</h3>
-        <button id="zones-close" class="ghost">×</button>
-      </header>
+    </section>
+  </main>
+
+  <!-- zones modal -->
+  <div id="zones-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-labelledby="zones-modal-title">
+      <div class="modal-head">
+        <h3 id="zones-modal-title" class="modal-title">分区管理</h3>
+        <button id="zones-close" class="icon-btn" aria-label="关闭">×</button>
+      </div>
       <ul id="zones-list" class="list"></ul>
-      <form id="zone-create-form" class="upload">
-        <input id="zone-new-name" placeholder="新分区名称" maxlength="32" />
-        <button type="submit">创建</button>
+      <form id="zone-create-form" class="upload" style="margin-top:var(--sp-4);">
+        <div class="field">
+          <input id="zone-new-name" class="input" placeholder="新分区名称" maxlength="32" />
+        </div>
+        <button type="submit" class="btn btn-primary" style="height:44px;">创建</button>
       </form>
-      <p id="zones-err" class="err"></p>
+      <p id="zones-err" class="modal-error"></p>
     </div>
   </div>
-</main>
+
 <script type="module">
 const $ = (id) => document.getElementById(id);
 
@@ -104,6 +142,8 @@ let zones = [];
 let currentZoneId = null;
 let currentZoneName = "";
 
+async function loadServerAddrs() { /* 留空 */ }
+
 async function refreshZones() {
   const r = await api("/api/zones");
   zones = r.zones;
@@ -123,8 +163,8 @@ function renderZoneTabs() {
   for (const z of zones) {
     const b = document.createElement("button");
     b.className = "zone-tab" + (z.id === currentZoneId ? " active" : "");
-    b.textContent = z.name + (z.builtin ? "" : "");
-    b.title = z.builtin ? "默认分区" : "分区 #" + z.id;
+    b.textContent = z.name;
+    b.title = z.builtin ? "默认分区" : `分区 #${z.id}`;
     b.onclick = () => switchZone(z.id);
     ul.appendChild(b);
   }
@@ -135,7 +175,7 @@ function switchZone(zoneId) {
   const z = zones.find((x) => x.id === zoneId);
   currentZoneName = z?.name ?? "";
   $("zone-label").textContent = currentZoneName || "—";
-  $("queue-title").textContent = `播放队列（${currentZoneName || "—"})`;
+  $("queue-title").textContent = `播放队列（${currentZoneName || "—"}）`;
   renderZoneTabs();
   refreshPlayback();
   refreshZoneDevices();
@@ -146,29 +186,40 @@ async function refreshTracks() {
   tracks = r.tracks;
   const ul = $("track-list");
   ul.innerHTML = "";
+  if (tracks.length === 0) {
+    ul.innerHTML = '<li class="list-empty">曲库为空，从上方上传你的第一首曲目</li>';
+    return;
+  }
   for (const t of tracks) {
     const li = document.createElement("li");
-    li.innerHTML = `<div><b></b><small></small></div>
-      <div class="row-actions">
-        <span class="dur">${Math.round(t.duration_ms / 1000)}s</span>
-        <button data-act="play">▶</button><button data-act="enqueue">+队列</button><button data-act="del">删</button>
+    li.className = "list-item";
+    li.innerHTML = `
+      <div class="list-item-main">
+        <div class="list-item-title"></div>
+        <div class="list-item-sub"></div>
+      </div>
+      <div class="list-item-actions">
+        <span class="muted" style="font-size:11px;font-variant-numeric:tabular-nums;">${Math.round(t.duration_ms / 1000)}s</span>
+        <button class="icon-btn primary" data-act="play" aria-label="播放">▶</button>
+        <button class="icon-btn" data-act="enqueue" aria-label="加入队列">+</button>
+        <button class="icon-btn danger" data-act="del" aria-label="删除">✕</button>
       </div>`;
-    li.querySelector("b").textContent = t.title;
-    li.querySelector("small").textContent = t.artist ?? "";
+    li.querySelector(".list-item-title").textContent = t.title;
+    li.querySelector(".list-item-sub").textContent = t.artist ?? `${t.id.slice(0, 8)}…`;
     const zonePath = currentZoneId ? `/api/zones/${currentZoneId}` : "/api/zones/1";
-    li.querySelector('[data-act="play"]').addEventListener("click", async () => {
+    li.querySelector('[data-act="play"]').onclick = async () => {
       await api(`${zonePath}/playback/play`, { method: "POST", json: { trackId: t.id } });
-      await refreshPlayback();
-    });
-    li.querySelector('[data-act="enqueue"]').addEventListener("click", async () => {
+      refreshPlayback();
+    };
+    li.querySelector('[data-act="enqueue"]').onclick = async () => {
       await api(`${zonePath}/queue/enqueue`, { method: "POST", json: { trackIds: [t.id] } });
-      await refreshPlayback();
-    });
-    li.querySelector('[data-act="del"]').addEventListener("click", async () => {
-      if (!confirm(`删除 ${t.title}？`)) return;
+      refreshPlayback();
+    };
+    li.querySelector('[data-act="del"]').onclick = async () => {
+      if (!confirm(`删除「${t.title}」？`)) return;
       await api(`/api/tracks/${t.id}`, { method: "DELETE" });
       await refreshTracks();
-    });
+    };
     ul.appendChild(li);
   }
 }
@@ -179,30 +230,34 @@ async function refreshZoneDevices() {
   const ul = $("device-list");
   ul.innerHTML = "";
   if (r.devices.length === 0) {
-    ul.innerHTML = '<li class="empty">本分区暂无设备</li>';
+    ul.innerHTML = '<li class="list-empty">本分区暂无设备</li>';
     return;
   }
   for (const d of r.devices) {
     const li = document.createElement("li");
-    li.innerHTML = `<div><span class="dot ${d.online ? "ok" : ""}"></span><b class="dname"></b><small></small></div>
-      <div class="row-actions">
-        <input type="range" min="0" max="1" step="0.01" value="${d.volume}" />
-        <span class="vol-val">${Math.round(d.volume * 100)}%</span>
-        <button data-act="remove">移除</button>
+    li.className = "list-item";
+    li.innerHTML = `
+      <div class="list-item-main">
+        <div class="list-item-title"><span class="dot ${d.online ? "ok" : ""}"></span><span class="dname"></span></div>
+        <div class="list-item-sub">${d.kind} · ${d.id.slice(0, 6)}${d.ip ? " · " + d.ip : ""}</div>
+      </div>
+      <div class="list-item-actions">
+        <input type="range" min="0" max="1" step="0.01" value="${d.volume}" style="width:80px;" aria-label="音量" />
+        <span class="muted" style="font-size:11px;font-variant-numeric:tabular-nums;min-width:32px;text-align:right;">${Math.round(d.volume * 100)}%</span>
+        <button class="icon-btn danger" data-act="remove" aria-label="移除">✕</button>
       </div>`;
     li.querySelector(".dname").textContent = d.name;
-    li.querySelector("small").textContent = ` ${d.kind} · ${d.id.slice(0, 6)}${d.ip ? " · " + d.ip : ""}`;
     const range = li.querySelector("input");
-    const valEl = li.querySelector(".vol-val");
-    range.addEventListener("input", () => { valEl.textContent = `${Math.round(Number(range.value) * 100)}%`; });
-    range.addEventListener("change", async () => {
+    const valEl = li.querySelector(".muted");
+    range.oninput = () => { valEl.textContent = `${Math.round(Number(range.value) * 100)}%`; };
+    range.onchange = async () => {
       await api(`/api/devices/${d.id}`, { method: "PATCH", json: { volume: Number(range.value) } });
-    });
-    li.querySelector('[data-act="remove"]').addEventListener("click", async () => {
-      if (!confirm(`移除 ${d.name}？`)) return;
+    };
+    li.querySelector('[data-act="remove"]').onclick = async () => {
+      if (!confirm(`移除「${d.name}」？`)) return;
       await api(`/api/devices/${d.id}`, { method: "DELETE" });
       await refreshZoneDevices();
-    });
+    };
     ul.appendChild(li);
   }
 }
@@ -210,20 +265,30 @@ async function refreshZoneDevices() {
 async function refreshPlayback() {
   if (currentZoneId == null) return;
   const s = await api(`/api/zones/${currentZoneId}/snapshot`);
-  $("now-title").textContent = s.track ? `${s.track.title}${s.track.artist ? " — " + s.track.artist : ""}` : "—";
-  const pos = s.isPlaying && s.startServerTime ? s.trackOffsetMs + (s.serverTime - s.startServerTime) : s.trackOffsetMs;
+  const title = s.track?.title ?? "空闲";
+  const artist = s.track?.artist ?? "";
+  $("now-title").textContent = title;
+  $("now-artist").textContent = artist;
+  const pos = s.isPlaying && s.startServerTime
+    ? s.trackOffsetMs + (s.serverTime - s.startServerTime)
+    : s.trackOffsetMs;
   $("now-pos").textContent = String(Math.max(0, Math.round(pos)));
   $("now-dur").textContent = String(s.track?.durationMs ?? 0);
   $("now-state").textContent = s.isPlaying ? "播放中" : s.track ? "已暂停" : "空闲";
   const ql = $("queue-list");
   ql.innerHTML = "";
-  s.queue.forEach((tid, idx) => {
-    const t = tracks.find((x) => x.id === tid);
-    const li = document.createElement("li");
-    li.innerHTML = `<span></span>`;
-    li.querySelector("span").textContent = `${idx + 1}. ${t ? t.title : tid}`;
-    ql.appendChild(li);
-  });
+  if (s.queue.length === 0) {
+    ql.innerHTML = '<li class="list-empty">队列为空</li>';
+  } else {
+    s.queue.forEach((tid, idx) => {
+      const t = tracks.find((x) => x.id === tid);
+      const li = document.createElement("li");
+      li.className = "list-item";
+      li.innerHTML = `<div class="list-item-main"><div class="list-item-sub"></div></div>`;
+      li.querySelector(".list-item-sub").textContent = `${idx + 1}. ${t ? t.title : tid}`;
+      ql.appendChild(li);
+    });
+  }
 }
 
 function bindZoneControls() {
@@ -245,48 +310,66 @@ function renderZonesModal() {
   ul.innerHTML = "";
   for (const z of zones) {
     const li = document.createElement("li");
-    li.innerHTML = `<div><b></b><small></small></div>
-      <div class="row-actions">
-        <button data-act="rename">改名</button>
-        <button data-act="del" ${z.builtin ? "disabled" : ""}>删除</button>
+    li.className = "list-item";
+    li.innerHTML = `
+      <div class="list-item-main">
+        <div class="list-item-title"></div>
+        <div class="list-item-sub">#${z.id} · ${z.builtin ? "内置" : "可管理"}</div>
+      </div>
+      <div class="list-item-actions">
+        <button class="icon-btn" data-act="rename" aria-label="改名">✎</button>
+        <button class="icon-btn danger" data-act="del" ${z.builtin ? "disabled" : ""} aria-label="删除">✕</button>
       </div>`;
-    li.querySelector("b").textContent = z.name + (z.builtin ? " (默认)" : "");
-    li.querySelector("small").textContent = `#${z.id} · ${z.builtin ? "内置" : "可管理"}`;
-    li.querySelector('[data-act="rename"]').addEventListener("click", async () => {
+    li.querySelector(".list-item-title").textContent = z.name + (z.builtin ? "（默认）" : "");
+    li.querySelector('[data-act="rename"]').onclick = async () => {
       const name = prompt("新名字", z.name);
       if (!name) return;
       try { await api(`/api/zones/${z.id}`, { method: "PATCH", json: { name } }); }
       catch (e) { $("zones-err").textContent = e.message; return; }
       await refreshZones();
       renderZonesModal();
-    });
-    li.querySelector('[data-act="del"]').addEventListener("click", async () => {
-      if (!confirm(`删除分区「${z.name}」？该分区的设备将变为"未分区"。`)) return;
+    };
+    li.querySelector('[data-act="del"]').onclick = async () => {
+      if (!confirm(`删除分区「${z.name}」？该分区设备将变为"未分区"。`)) return;
       try { await api(`/api/zones/${z.id}`, { method: "DELETE" }); }
       catch (e) { $("zones-err").textContent = e.message; return; }
       await refreshZones();
       renderZonesModal();
-    });
+    };
     ul.appendChild(li);
   }
 }
 
-async function loadServerAddrs() {
-  try {
-    const h = await api("/api/health");
-    if (h.serverIps?.length) {
-      $("server-addrs").innerHTML = "设备连接地址：" + h.serverIps.map((ip) =>
-        `<code>http://${ip.address}:${h.port}</code>`
-      ).join(" ");
+async function uploadFile(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/tracks");
+  xhr.withCredentials = true;
+  xhr.upload.onprogress = (ev) => {
+    if (ev.lengthComputable) {
+      const pct = (ev.loaded / ev.total) * 100;
+      $("upload-progress").classList.add("active");
+      $("upload-progress-fill").style.width = `${pct}%`;
+      $("upload-status").textContent = `上传中 ${file.name} — ${pct.toFixed(0)}%`;
     }
-  } catch {}
+  };
+  return new Promise((resolve, reject) => {
+    xhr.onload = () => {
+      $("upload-progress").classList.remove("active");
+      $("upload-progress-fill").style.width = "0%";
+      if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText));
+      else reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`));
+    };
+    xhr.onerror = () => reject(new Error("网络错误"));
+    xhr.send(fd);
+  });
 }
 
 async function bootDashboard() {
-  $("login").hidden = true;
+  $("login-screen").hidden = true;
   $("dashboard").hidden = false;
   bindZoneControls();
-  loadServerAddrs();
 
   $("logout-btn").onclick = async () => { await api("/api/auth/logout", { method: "POST" }); location.reload(); };
   $("zones-btn").onclick = openZonesModal;
@@ -306,15 +389,31 @@ async function bootDashboard() {
     } catch (e) { $("zones-err").textContent = e.message; }
   });
 
-  $("upload-form").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const f = $("upload-file").files?.[0]; if (!f) return;
-    const fd = new FormData(); fd.append("file", f);
-    const r = await fetch("/api/tracks", { method: "POST", body: fd, credentials: "include" });
-    if (!r.ok) { alert("上传失败：" + (await r.text())); return; }
+  // 上传 — 支持多文件 + 进度条
+  const uploadFileInput = $("upload-file");
+  const uploadDrop = $("upload-drop");
+  const handleFiles = async (files) => {
+    if (!files || files.length === 0) return;
+    for (const file of files) {
+      try {
+        $("upload-status").textContent = `上传中：${file.name}…`;
+        await uploadFile(file);
+        $("upload-status").textContent = `✓ ${file.name}`;
+      } catch (e) {
+        $("upload-status").textContent = `✗ ${file.name} — ${e.message}`;
+      }
+    }
+    await refreshTracks();
     $("upload-file").value = "";
-    refreshTracks();
-  });
+  };
+  uploadFileInput.addEventListener("change", (e) => handleFiles([...e.target.files]));
+  ["dragenter", "dragover"].forEach((ev) =>
+    uploadDrop.addEventListener(ev, (e) => { e.preventDefault(); uploadDrop.classList.add("dragover"); })
+  );
+  ["dragleave", "drop"].forEach((ev) =>
+    uploadDrop.addEventListener(ev, (e) => { e.preventDefault(); uploadDrop.classList.remove("dragover"); })
+  );
+  uploadDrop.addEventListener("drop", (e) => handleFiles([...e.dataTransfer.files]));
 
   await refreshTracks();
   await refreshZones();
@@ -324,14 +423,16 @@ async function bootDashboard() {
 (async () => {
   const me = await api("/api/auth/me");
   if (me.authenticated) { $("who").textContent = (me.username ?? "") + " "; bootDashboard(); return; }
-  $("login-btn").onclick = async () => {
-    const u = $("username").value, p = $("password").value;
+  $("login-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const u = $("username").value.trim(), p = $("password").value;
+    if (!u || !p) { $("login-err").textContent = "用户名和密码必填"; return; }
     try {
       await api("/api/auth/login", { method: "POST", json: { username: u, password: p } });
       $("who").textContent = u + " ";
       bootDashboard();
     } catch (e) { $("login-err").textContent = e?.message ?? "登录失败"; }
-  };
+  });
 })();
 </script>
 </body>
