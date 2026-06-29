@@ -123,15 +123,10 @@ function serveStatic(req, res, filePath) {
   const ext = extname(filePath).toLowerCase();
   const range = req.headers["range"];
   const total = stat.size;
-  // 内部工具，文件无 hash：禁止任何形式缓存，避免 web/ 改动后浏览器继续用旧版
-  // no-store：不存到磁盘/内存；must-revalidate：必须每次向源校验
-  // 配合 Pragma/Expires 覆盖到 HTTP/1.0 代理与启发式缓存
   const headers = {
     "Content-Type": MIME[ext] ?? "application/octet-stream",
     "Accept-Ranges": "bytes",
     "Cache-Control": "no-store, no-cache, must-revalidate",
-    "Pragma": "no-cache",
-    "Expires": "0",
   };
   if (range) {
     const m = /bytes=(\d*)-(\d*)/.exec(range);
@@ -200,7 +195,7 @@ route("POST", "/api/tracks", async (req, res) => {
   const boundary = m[1] ?? m[2];
   let parts;
   try {
-    parts = await parseMultipart(req, boundary, 200 * 1024 * 1024);
+    parts = await parseMultipart(req, boundary, 1024 * 1024 * 1024);
   } catch (e) {
     return sendJson(res, 400, { error: String(e?.message ?? e) });
   }

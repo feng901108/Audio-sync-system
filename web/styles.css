@@ -937,6 +937,7 @@ input[type="file"] {
 }
 
 /* utility */
+[hidden] { display: none !important; }
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
 .mono-sm { font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }

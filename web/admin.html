@@ -246,12 +246,7 @@ async function api(path, init = {}) {
   const headers = { ...(init.headers || {}) };
   let body = init.body;
   if (init.json !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(init.json); }
-  let r;
-  try {
-    r = await fetch(path, { ...init, headers, body, credentials: "include" });
-  } catch (netErr) {
-    throw new Error("网络错误：" + (netErr?.message ?? netErr));
-  }
+  const r = await fetch(path, { ...init, headers, body, credentials: "include" });
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
     try { const j = await r.json(); if (j?.error) msg = j.error; } catch {}
@@ -259,14 +254,6 @@ async function api(path, init = {}) {
   }
   return await r.json();
 }
-
-// 暴露 fetch 错误到页面，便于排查
-window.addEventListener("error", (ev) => {
-  console.error("[juguang]", ev.error || ev.message);
-});
-window.addEventListener("unhandledrejection", (ev) => {
-  console.error("[juguang] unhandled:", ev.reason);
-});
 
 let tracks = [];
 let zones = [];
@@ -863,8 +850,12 @@ async function bootDashboard() {
 }
 
 (async () => {
-  const me = await api("/api/auth/me");
-  if (me.authenticated) { $("who").textContent = me.username ?? ""; bootDashboard(); return; }
+  try {
+    const me = await api("/api/auth/me");
+    if (me.authenticated) { $("who").textContent = me.username ?? ""; bootDashboard(); return; }
+  } catch (e) {
+    console.warn("检查登录状态失败：", e);
+  }
   $("login-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const u = $("username").value.trim(), p = $("password").value;
