@@ -1,5 +1,6 @@
 // 极简 multipart/form-data 解析器：把整个请求 body 读到内存，按 boundary 切片。
-// 适合中等大小的音频上传（默认上限 200MB）。
+// 大文件（≤1GB）靠 Node 堆外 Buffer 扛得住上传；真正的大文件瓶颈在客户端解码，
+// 见 web/sync.js 的流式播放（HTMLAudioElement 边下边播，不整文件 decode）。
 export async function parseMultipart(req, boundary, maxBytes = 1024 * 1024 * 1024) {
   const chunks = [];
   let total = 0;

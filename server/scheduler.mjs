@@ -53,7 +53,7 @@ function scheduleAdvance(zoneId, durationMs, startServerTime, offsetMs) {
   if (!durationMs || durationMs <= 0) return; // duration 未知时不自动 advance，由前端 onended 或 admin 手动切
   const remain = durationMs - offsetMs - (Date.now() - startServerTime);
   if (remain <= 0) return;
-  zoneState(zoneId).advanceTimer = setTimeout(() => next(zoneId), remain + 200);
+  zoneState(zoneId).advanceTimer = setTimeout(() => next(zoneId), remain + 50);
 }
 
 export function play(zoneId, trackId, offsetMs = 0) {
@@ -116,6 +116,20 @@ export function next(zoneId = DEFAULT_ZONE) {
   const cur = getRow(zoneId);
   const q = getQueue(zoneId);
   const mode = cur.mode || "sequential";
+  // 单曲循环：重置进度，重播当前曲（scheduleAdvance 到期调 next 时也走这里）
+  if (mode === "loop-one" && cur.track_id) {
+    return play(zoneId, cur.track_id, 0);
+  }
+  // 随机：从队列里排除当前曲随机选一首，弹出播放（队列逐渐空，和 sequential 一致）
+  if (mode === "shuffle") {
+    const candidates = cur.track_id ? q.filter((id) => id !== cur.track_id) : q.slice();
+    if (candidates.length === 0) {
+      return stop(zoneId); // 队列播完即停，不重播当前（否则单曲死循环）
+    }
+    const pick = candidates[Math.floor(Math.random() * candidates.length)];
+    setQueue(zoneId, q.filter((id) => id !== pick));
+    return play(zoneId, pick, 0);
+  }
   // queue 里去掉当前正在播的歌（避免 next 重播当前歌）
   const upcoming = cur.track_id ? q.filter((id) => id !== cur.track_id) : q;
   if (upcoming.length === 0) {
@@ -138,12 +152,17 @@ export function next(zoneId = DEFAULT_ZONE) {
   return play(zoneId, head, 0);
 }
 
-// loop-one 模式下 scheduleAdvance 触发 next 时其实不切歌——但如果当前没有 track，
-// scheduleAdvance 不会被设。loop-one 完全靠 admin 手动切歌或切到队列里，
-// 队列空时 next 不触发新 play（除非客户端手动点下一首）。
-// 上面的 next 在 loop-one 时也照样工作（只是逻辑上调用方不该调）。
+export function prev(zoneId = DEFAULT_ZONE) {
+  const cur = getRow(zoneId);
+  if (!cur.track_id) return { ok: false, error: "没有曲目" };
+  const q = getQueue(zoneId);
+  const idx = q.indexOf(cur.track_id);
+  if (idx > 0) return play(zoneId, q[idx - 1], 0); // 队列里当前的前一首
+  return play(zoneId, cur.track_id, 0); // 已是队首或不在队列：重播当前
+}
+
 export function setMode(zoneId, mode) {
-  if (!["sequential", "loop-one", "loop-all"].includes(mode)) {
+  if (!["sequential", "loop-one", "shuffle", "loop-all"].includes(mode)) {
     return { ok: false, error: "非法 mode" };
   }
   const s = getRow(zoneId);

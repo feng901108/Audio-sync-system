@@ -6,7 +6,7 @@ import { db } from "./db.mjs";
 import { findAdminByUsername, verifyPassword, createSession, getSession, destroySession, adminCount } from "./auth.mjs";
 import { handleUpgrade, hub, STALE_MS, SWEEP_INTERVAL_MS } from "./ws.mjs";
 import {
-  setHub, snapshot, play, pause, resume, stop, seek, next,
+  setHub, snapshot, play, pause, resume, stop, seek, next, prev,
   enqueue, clearQueue, setQueue, setMode,
   listZones, getZone, createZone, renameZone, deleteZone, assignDeviceZone,
   listPlaylists, getPlaylist, createPlaylist, renamePlaylist, deletePlaylist,
@@ -336,6 +336,7 @@ route("POST", "/api/playback/pause", async (_req, res) => respondResult(res, pau
 route("POST", "/api/playback/resume", async (_req, res) => respondResult(res, resume(1)), { requireAuth: true });
 route("POST", "/api/playback/stop", async (_req, res) => respondResult(res, stop(1)), { requireAuth: true });
 route("POST", "/api/playback/next", async (_req, res) => respondResult(res, next(1)), { requireAuth: true });
+route("POST", "/api/playback/prev", async (_req, res) => respondResult(res, prev(1)), { requireAuth: true });
 route("POST", "/api/playback/seek", async (req, res) => {
   const { offsetMs } = await readJson(req);
   respondResult(res, seek(1, Number(offsetMs ?? 0)));
@@ -429,6 +430,12 @@ route("POST", "/api/zones/:zoneId/playback/next", async (_req, res, params) => {
   if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
   if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
   respondResult(res, next(zid));
+}, { requireAuth: true });
+route("POST", "/api/zones/:zoneId/playback/prev", async (_req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  respondResult(res, prev(zid));
 }, { requireAuth: true });
 route("POST", "/api/zones/:zoneId/playback/seek", async (req, res, params) => {
   const zid = parseZoneId(params);

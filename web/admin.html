@@ -32,168 +32,145 @@
     </div>
   </section>
 
-  <!-- dashboard: 单屏布局 -->
+  <!-- dashboard: 四象限布局 -->
   <main id="dashboard" class="dashboard-compact" hidden>
 
-    <!-- 顶栏：标题 + 操作 -->
+    <!-- 顶栏：标题 + 登出（模式切换已移到右上播放器） -->
     <header class="topbar-compact">
       <div class="topbar-left">
         <h1 class="topbar-title">聚光广播</h1>
         <span class="topbar-who" id="who"></span>
       </div>
-
       <div class="topbar-actions">
-        <!-- 播放模式：顺序 / 单曲循环 / 歌单循环 -->
-        <div id="mode-switch" class="mode-switch" role="radiogroup" aria-label="播放模式">
-          <button class="mode-switch-btn" data-mode="sequential" title="顺序播放">
-            <span class="ico">⇢</span><span>顺序</span>
-          </button>
-          <button class="mode-switch-btn" data-mode="loop-one" title="单曲循环">
-            <span class="ico">↻</span><span>单曲</span>
-          </button>
-          <button class="mode-switch-btn" data-mode="loop-all" title="歌单循环">
-            <span class="ico">⟲</span><span>歌单</span>
-          </button>
-        </div>
-        <button id="playlists-btn" class="btn btn-ghost" aria-label="歌单管理">歌单</button>
         <button id="logout-btn" class="btn btn-ghost">登出</button>
       </div>
     </header>
 
-    <!-- 左右两列 -->
-    <div class="layout-compact">
+    <!-- 2x2 grid：左上管理 / 右上播放器 / 左下曲库 / 右下队列 -->
+    <div class="layout-grid">
 
-      <!-- 左列：分区 tab + 上传 + 曲库 + 本分区设备 -->
-      <section class="col col-main">
-        <!-- 分区 tab + 新建分区 + 分区管理 -->
-        <div class="panel panel-zones">
-          <div class="zones-row">
-            <nav id="zone-tabs" class="zone-tabs-inline" aria-label="分区切换"></nav>
-            <button id="zone-add-btn" class="icon-btn" aria-label="新建分区" title="新建分区">+</button>
-            <button id="zones-mgmt-btn" class="btn btn-ghost btn-tiny" aria-label="分区管理" title="改名 / 删除分区">管理</button>
-          </div>
-        </div>
+      <!-- 左上：设备 / 歌单 / 分区 管理（渐变背景） -->
+      <section class="quad quad-manage">
+        <nav class="manage-tabs" role="tablist" aria-label="管理">
+          <button class="manage-tab active" data-mtab="devices">设备</button>
+          <button class="manage-tab" data-mtab="playlists">歌单</button>
+          <button class="manage-tab" data-mtab="zones">分区</button>
+        </nav>
 
-        <!-- 曲库 + 上传 -->
-        <div class="panel">
+        <!-- 设备：全部设备 + 音量 + 分区分配 -->
+        <div id="view-devices" class="manage-panel">
           <header class="panel-head">
-            <h2 class="panel-title">
-              <span>曲库</span>
-              <span class="muted" style="font-weight:400;font-size:13px;">全局共享</span>
-            </h2>
-          </header>
-
-          <form id="upload-form" class="upload-compact">
-            <label class="upload-drop-compact" id="upload-drop">
-              <input id="upload-file" type="file" accept="audio/*" multiple />
-              <span class="upload-drop-text">
-                <strong>点击或拖入文件</strong>
-                <span class="muted">支持多选 · MP3 / M4A / AAC / OGG / WAV / FLAC</span>
-              </span>
-            </label>
-            <div class="upload-progress" id="upload-progress">
-              <div class="upload-progress-fill" id="upload-progress-fill"></div>
-            </div>
-            <p id="upload-status" class="upload-status muted"></p>
-          </form>
-
-          <ul id="track-list" class="list list-compact"></ul>
-        </div>
-
-        <!-- 本分区设备 -->
-        <div class="panel">
-          <header class="panel-head">
-            <h3 class="panel-title-sm">本分区设备</h3>
-            <span class="muted" style="font-size:11px;" id="device-count">0 台</span>
+            <h3 class="panel-title-sm">设备</h3>
+            <span class="muted" id="device-count" style="font-size:11px;">0 台</span>
           </header>
           <ul id="device-list" class="list list-compact"></ul>
         </div>
+
+        <!-- 歌单：列表 / 详情 两级 -->
+        <div id="view-playlists" class="manage-panel" hidden>
+          <div id="playlists-list-view">
+            <form id="playlist-create-form" class="upload" style="margin-bottom:var(--sp-2);">
+              <div class="field" style="flex-direction:row;gap:var(--sp-2);align-items:center;">
+                <input id="playlist-new-name" class="input" placeholder="新歌单名称" maxlength="32" style="flex:1;" />
+                <button type="submit" class="btn btn-primary" style="height:40px;">创建</button>
+              </div>
+            </form>
+            <div id="playlists-list"></div>
+            <p id="playlists-err" class="modal-error"></p>
+          </div>
+          <div id="playlists-detail-view" hidden>
+            <div class="playlist-detail-head">
+              <div>
+                <h4 class="playlist-detail-name" id="pl-detail-name"></h4>
+                <div class="playlist-detail-sub" id="pl-detail-sub"></div>
+              </div>
+              <div style="display:flex;gap:var(--sp-2);">
+                <button id="pl-load-btn" class="btn btn-primary" style="height:36px;font-size:13px;" title="替换当前分区队列并播放">载入队列</button>
+                <button id="pl-back-btn" class="btn btn-ghost" style="height:36px;font-size:13px;">返回</button>
+              </div>
+            </div>
+            <div id="pl-tracks-list" style="margin-top:var(--sp-3);"></div>
+          </div>
+        </div>
+
+        <!-- 分区：切换 + 改名 + 删除 + 新建（inline，不再弹窗） -->
+        <div id="view-zones" class="manage-panel" hidden>
+          <header class="panel-head">
+            <h3 class="panel-title-sm">分区</h3>
+            <button id="zone-add-btn" class="btn btn-ghost btn-tiny" title="新建分区">+ 新建</button>
+          </header>
+          <ul id="zones-list" class="list list-compact"></ul>
+        </div>
       </section>
 
-      <!-- 右列：现在播放 + 队列（紧凑） -->
-      <aside class="col col-side">
-
-        <!-- now playing -->
-        <div class="panel panel-now">
-          <div class="now-panel-eyebrow">
-            <span class="muted">正在播放 · </span>
-            <span id="zone-label">—</span>
-          </div>
-          <h2 class="now-panel-title" id="now-title">空闲</h2>
-          <p class="now-panel-artist" id="now-artist"></p>
-          <div class="now-panel-meta">
-            <span><span class="accent" id="now-pos">0</span><span class="muted"> ms</span></span>
-            <span><span class="muted">状态 </span><span id="now-state">—</span></span>
-          </div>
-          <div class="now-panel-controls">
-            <button id="btn-pause" class="btn btn-icon" aria-label="暂停" title="暂停">⏸</button>
-            <button id="btn-resume" class="btn btn-icon" aria-label="继续" title="继续">▶</button>
-            <button id="btn-next" class="btn btn-icon" aria-label="下一首" title="下一首">⏭</button>
-            <button id="btn-stop" class="btn btn-icon" aria-label="停止" title="停止">⏹</button>
-          </div>
+      <!-- 右上：播放器（标题 / 进度条 / 模式 / 全套控件） -->
+      <section class="quad quad-player panel-now">
+        <div class="now-panel-eyebrow">
+          <span class="muted">正在播放 · </span>
+          <span id="zone-label">—</span>
         </div>
-
-        <!-- 队列 -->
-        <div class="panel">
-          <header class="panel-head">
-            <h3 class="panel-title-sm">播放队列 <span class="muted" style="font-weight:400;font-size:11px;text-transform:none;letter-spacing:0;">（可拖拽排序）</span></h3>
-            <button id="clear-queue" class="btn btn-ghost" style="height:28px;font-size:12px;padding:0 10px;">清空</button>
-          </header>
-          <ul id="queue-list" class="list list-compact queue-draggable"></ul>
+        <h2 class="now-panel-title" id="now-title">空闲</h2>
+        <p class="now-panel-artist" id="now-artist"></p>
+        <div class="now-panel-meta">
+          <div class="seek-row">
+            <span class="mono-sm" id="now-pos">0:00</span>
+            <input type="range" id="seek-bar" min="0" max="0" value="0" step="100" aria-label="进度" />
+            <span class="muted mono-sm" id="now-dur">0:00</span>
+          </div>
+          <span><span class="muted">状态 </span><span id="now-state">—</span></span>
         </div>
+        <div id="mode-switch" class="mode-switch" role="radiogroup" aria-label="播放模式">
+          <button class="mode-switch-btn" data-mode="sequential" title="顺序播放"><span class="ico">⇢</span><span>顺序</span></button>
+          <button class="mode-switch-btn" data-mode="loop-one" title="单曲循环"><span class="ico">↻</span><span>单曲</span></button>
+          <button class="mode-switch-btn" data-mode="shuffle" title="随机播放"><span class="ico">🔀</span><span>随机</span></button>
+          <button class="mode-switch-btn" data-mode="loop-all" title="歌单循环"><span class="ico">⟲</span><span>循环</span></button>
+        </div>
+        <div class="now-panel-controls">
+          <button id="btn-prev" class="btn btn-icon" aria-label="上一首" title="上一首">⏮</button>
+          <button id="btn-back" class="btn btn-icon" aria-label="快退10秒" title="快退 10s">⏪</button>
+          <button id="btn-pause" class="btn btn-icon" aria-label="暂停" title="暂停">⏸</button>
+          <button id="btn-resume" class="btn btn-icon" aria-label="继续" title="继续">▶</button>
+          <button id="btn-next" class="btn btn-icon" aria-label="下一首" title="下一首">⏭</button>
+          <button id="btn-fwd" class="btn btn-icon" aria-label="快进10秒" title="快进 10s">⏩</button>
+          <button id="btn-stop" class="btn btn-icon" aria-label="停止" title="停止">⏹</button>
+        </div>
+      </section>
 
-      </aside>
+      <!-- 左下：上传 + 曲库 -->
+      <section class="quad quad-library">
+        <header class="panel-head">
+          <h2 class="panel-title">
+            <span>曲库</span>
+            <span class="muted" style="font-weight:400;font-size:13px;">全局共享</span>
+          </h2>
+        </header>
+        <form id="upload-form" class="upload-compact">
+          <label class="upload-drop-compact" id="upload-drop">
+            <input id="upload-file" type="file" accept="audio/*" multiple />
+            <span class="upload-drop-text">
+              <strong>点击或拖入文件</strong>
+              <span class="muted">支持多选 · MP3 / M4A / AAC / OGG / WAV / FLAC</span>
+            </span>
+          </label>
+          <div class="upload-progress" id="upload-progress">
+            <div class="upload-progress-fill" id="upload-progress-fill"></div>
+          </div>
+          <p id="upload-status" class="upload-status muted"></p>
+        </form>
+        <ul id="track-list" class="list list-compact"></ul>
+      </section>
+
+      <!-- 右下：播放队列（当前歌单） -->
+      <section class="quad quad-queue">
+        <header class="panel-head">
+          <h3 class="panel-title-sm">播放队列 <span class="muted" style="font-weight:400;font-size:11px;text-transform:none;letter-spacing:0;">（可拖拽排序）</span></h3>
+          <button id="clear-queue" class="btn btn-ghost" style="height:28px;font-size:12px;padding:0 10px;">清空</button>
+        </header>
+        <ul id="queue-list" class="list list-compact queue-draggable"></ul>
+      </section>
+
     </div>
   </main>
-
-  <!-- 分区管理 弹窗（改名 / 删除） -->
-  <div id="zones-modal" class="modal-backdrop" hidden>
-    <div class="modal" role="dialog" aria-labelledby="zones-modal-title">
-      <div class="modal-head">
-        <h3 id="zones-modal-title" class="modal-title">分区管理</h3>
-        <button id="zones-close" class="icon-btn" aria-label="关闭">×</button>
-      </div>
-      <ul id="zones-list" class="list"></ul>
-      <p id="zones-err" class="modal-error"></p>
-    </div>
-  </div>
-
-  <!-- 歌单管理 弹窗（两级：列表 / 详情） -->
-  <div id="playlists-modal" class="modal-backdrop" hidden>
-    <div class="modal" role="dialog" aria-labelledby="playlists-modal-title" style="width:560px;">
-      <div class="modal-head">
-        <h3 id="playlists-modal-title" class="modal-title">歌单管理</h3>
-        <button id="playlists-close" class="icon-btn" aria-label="关闭">×</button>
-      </div>
-
-      <!-- 列表视图 -->
-      <div id="playlists-list-view">
-        <form id="playlist-create-form" class="upload" style="margin-bottom:var(--sp-3);">
-          <div class="field" style="flex-direction:row;gap:var(--sp-2);align-items:center;">
-            <input id="playlist-new-name" class="input" placeholder="新歌单名称" maxlength="32" style="flex:1;" />
-            <button type="submit" class="btn btn-primary" style="height:48px;">创建</button>
-          </div>
-        </form>
-        <div id="playlists-list"></div>
-        <p id="playlists-err" class="modal-error"></p>
-      </div>
-
-      <!-- 详情视图 -->
-      <div id="playlists-detail-view" hidden>
-        <div class="playlist-detail-head">
-          <div>
-            <h4 class="playlist-detail-name" id="pl-detail-name"></h4>
-            <div class="playlist-detail-sub" id="pl-detail-sub"></div>
-          </div>
-          <div style="display:flex;gap:var(--sp-2);">
-            <button id="pl-load-btn" class="btn btn-primary" style="height:36px;font-size:13px;" title="替换当前分区队列并播放">载入队列</button>
-            <button id="pl-back-btn" class="btn btn-ghost" style="height:36px;font-size:13px;">返回</button>
-          </div>
-        </div>
-        <div id="pl-tracks-list" style="margin-top:var(--sp-3);"></div>
-      </div>
-    </div>
-  </div>
 
   <!-- 「加入歌单」选择 弹窗 -->
   <div id="picker-modal" class="modal-backdrop" hidden>
@@ -261,30 +238,87 @@ let playlists = [];
 let currentZoneId = null;
 let currentZoneName = "";
 let currentMode = "sequential";
+let currentManageTab = "devices";
+let seekDragging = false;
+let volumeDragging = false;
 
-function renderZoneTabs() {
-  const ul = $("zone-tabs");
+function fmtTime(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r < 10 ? "0" : ""}${r}`;
+}
+
+// 左上管理 tab 切换：设备 / 歌单 / 分区
+function switchManageTab(name) {
+  currentManageTab = name;
+  $("view-devices").hidden = (name !== "devices");
+  $("view-playlists").hidden = (name !== "playlists");
+  $("view-zones").hidden = (name !== "zones");
+  for (const b of document.querySelectorAll(".manage-tabs .manage-tab")) {
+    b.classList.toggle("active", b.dataset.mtab === name);
+  }
+  if (name === "playlists") {
+    $("playlists-detail-view").hidden = true;
+    $("playlists-list-view").hidden = false;
+    $("playlists-err").textContent = "";
+    $("playlist-new-name").value = "";
+    refreshPlaylists().then(renderPlaylistsList);
+  } else if (name === "zones") {
+    renderZonesList();
+  } else if (name === "devices") {
+    refreshZoneDevices();
+  }
+}
+
+// 分区 inline 列表（切换 + 改名 + 删除）
+function renderZonesList() {
+  const ul = $("zones-list");
   ul.innerHTML = "";
   for (const z of zones) {
-    const b = document.createElement("button");
-    b.className = "zone-tab" + (z.id === currentZoneId ? " active" : "");
-    b.textContent = z.name + (z.builtin ? "" : "");
-    b.title = z.builtin ? "默认分区" : `分区 #${z.id}`;
-    b.onclick = () => switchZone(z.id);
-    ul.appendChild(b);
+    const li = document.createElement("li");
+    li.className = "list-item list-item-compact" + (z.id === currentZoneId ? " zone-current" : "");
+    li.innerHTML = `
+      <div class="list-item-main">
+        <div class="list-item-title"></div>
+        <div class="list-item-sub">#${z.id} · ${z.builtin ? "默认" : "可管理"}</div>
+      </div>
+      <div class="list-item-actions">
+        <button class="icon-btn" data-act="rename" aria-label="改名" title="改名">✎</button>
+        <button class="icon-btn danger" data-act="del" ${z.builtin ? "disabled" : ""} aria-label="删除" title="删除">✕</button>
+      </div>`;
+    li.querySelector(".list-item-title").textContent = z.name + (z.id === currentZoneId ? " · 当前" : "");
+    li.querySelector(".list-item-main").onclick = () => switchZone(z.id);
+    li.querySelector('[data-act="rename"]').onclick = async (ev) => {
+      ev.stopPropagation();
+      const name = prompt("新名字", z.name);
+      if (!name) return;
+      try { await api(`/api/zones/${z.id}`, { method: "PATCH", json: { name } }); }
+      catch (e) { alert(e.message); return; }
+      await refreshZones();
+    };
+    li.querySelector('[data-act="del"]').onclick = async (ev) => {
+      ev.stopPropagation();
+      if (z.builtin) return;
+      if (!confirm(`删除分区「${z.name}」？该分区的设备将变为"未分区"。`)) return;
+      try { await api(`/api/zones/${z.id}`, { method: "DELETE" }); }
+      catch (e) { alert(e.message); return; }
+      await refreshZones();
+    };
+    ul.appendChild(li);
   }
 }
 
 async function refreshZones() {
   const r = await api("/api/zones");
   zones = r.zones;
-  renderZoneTabs();
   if (currentZoneId == null) {
     if (zones.length > 0) switchZone(zones[0].id);
   } else if (!zones.find((z) => z.id === currentZoneId)) {
     switchZone(zones[0]?.id ?? null);
   } else {
-    renderZoneTabs();
+    renderZonesList();
+    if (currentManageTab === "devices") refreshZoneDevices(); // 分区名变了，刷新设备下拉
   }
 }
 
@@ -293,9 +327,8 @@ function switchZone(zoneId) {
   const z = zones.find((x) => x.id === zoneId);
   currentZoneName = z?.name ?? "";
   $("zone-label").textContent = currentZoneName || "—";
-  renderZoneTabs();
+  renderZonesList();
   refreshPlayback();
-  refreshZoneDevices();
 }
 
 async function refreshTracks() {
@@ -345,9 +378,9 @@ async function refreshTracks() {
   }
 }
 
+// 全部设备 + 音量 + 分区分配（不再只看当前分区）
 async function refreshZoneDevices() {
-  if (currentZoneId == null) return;
-  const r = await api(`/api/zones/${currentZoneId}/devices`);
+  const r = await api("/api/devices");
   const ul = $("device-list");
   ul.innerHTML = "";
   $("device-count").textContent = `${r.devices.length} 台`;
@@ -358,21 +391,33 @@ async function refreshZoneDevices() {
   for (const d of r.devices) {
     const li = document.createElement("li");
     li.className = "list-item list-item-compact";
+    const zoneOpts = `<option value="" ${d.zone_id == null ? "selected" : ""}>未分区</option>`
+      + zones.map((z) => `<option value="${z.id}" ${d.zone_id == z.id ? "selected" : ""}>${z.name}</option>`).join("");
     li.innerHTML = `
       <div class="list-item-main">
         <div class="list-item-title"><span class="dot ${d.online ? "ok" : ""}"></span><span class="dname"></span></div>
         <div class="list-item-sub">${d.kind} · ${d.id.slice(0, 6)}${d.ip ? " · " + d.ip : ""}</div>
       </div>
       <div class="list-item-actions">
-        <input type="range" min="0" max="1" step="0.01" value="${d.volume}" style="width:70px;" aria-label="音量" />
+        <select class="device-zone-sel" aria-label="分配分区" title="分配分区">${zoneOpts}</select>
+        <input type="range" min="0" max="1" step="0.01" value="${d.volume}" style="width:56px;" aria-label="音量" />
         <span class="muted mono-sm">${Math.round(d.volume * 100)}%</span>
       </div>`;
     li.querySelector(".dname").textContent = d.name;
+    const sel = li.querySelector("select");
+    sel.onchange = async () => {
+      const zid = sel.value === "" ? null : Number(sel.value);
+      try { await api(`/api/devices/${d.id}`, { method: "PATCH", json: { zoneId: zid } }); }
+      catch (e) { alert(e.message); }
+      refreshZoneDevices();
+    };
     const range = li.querySelector("input");
     const valEl = li.querySelector(".muted");
-    range.oninput = () => { valEl.textContent = `${Math.round(Number(range.value) * 100)}%`; };
+    range.oninput = () => { volumeDragging = true; valEl.textContent = `${Math.round(Number(range.value) * 100)}%`; };
     range.onchange = async () => {
-      await api(`/api/devices/${d.id}`, { method: "PATCH", json: { volume: Number(range.value) } });
+      try { await api(`/api/devices/${d.id}`, { method: "PATCH", json: { volume: Number(range.value) } }); }
+      catch (e) { alert(e.message); }
+      volumeDragging = false;
     };
     ul.appendChild(li);
   }
@@ -386,10 +431,15 @@ async function refreshPlayback() {
   const pos = s.isPlaying && s.startServerTime
     ? s.trackOffsetMs + (s.serverTime - s.startServerTime)
     : s.trackOffsetMs;
-  $("now-pos").textContent = String(Math.max(0, Math.round(pos)));
+  const dur = s.track?.durationMs || 0;
+  $("seek-bar").max = String(dur);
+  $("now-dur").textContent = fmtTime(dur);
+  if (!seekDragging) {
+    $("seek-bar").value = String(Math.max(0, Math.min(dur, Math.round(pos))));
+    $("now-pos").textContent = fmtTime(pos);
+  }
   $("now-state").textContent = s.isPlaying ? "播放中" : s.track ? "已暂停" : "空闲";
 
-  // 模式切换高亮
   if (s.mode && s.mode !== currentMode) {
     currentMode = s.mode;
     renderModeSwitch();
@@ -423,36 +473,40 @@ function renderModeSwitch() {
 }
 
 function bindZoneControls() {
-  $("btn-pause").onclick = async () => { await api(`/api/zones/${currentZoneId}/playback/pause`, { method: "POST" }); refreshPlayback(); };
-  $("btn-resume").onclick = async () => { await api(`/api/zones/${currentZoneId}/playback/resume`, { method: "POST" }); refreshPlayback(); };
-  $("btn-next").onclick = async () => { await api(`/api/zones/${currentZoneId}/playback/next`, { method: "POST" }); refreshPlayback(); };
-  $("btn-stop").onclick = async () => { await api(`/api/zones/${currentZoneId}/playback/stop`, { method: "POST" }); refreshPlayback(); };
-  $("clear-queue").onclick = async () => { await api(`/api/zones/${currentZoneId}/queue/clear`, { method: "POST" }); refreshPlayback(); };
-}
+  const z = () => currentZoneId;
+  const seekTo = async (offsetMs) => {
+    await api(`/api/zones/${z()}/playback/seek`, { method: "POST", json: { offsetMs: Math.max(0, Math.round(offsetMs)) } });
+    refreshPlayback();
+  };
+  const curPos = async () => {
+    const s = await api(`/api/zones/${z()}/snapshot`);
+    return s.isPlaying && s.startServerTime ? s.trackOffsetMs + (s.serverTime - s.startServerTime) : s.trackOffsetMs;
+  };
+  $("btn-prev").onclick = async () => { await api(`/api/zones/${z()}/playback/prev`, { method: "POST" }); refreshPlayback(); };
+  $("btn-back").onclick = async () => seekTo((await curPos()) - 10000);
+  $("btn-pause").onclick = async () => { await api(`/api/zones/${z()}/playback/pause`, { method: "POST" }); refreshPlayback(); };
+  $("btn-resume").onclick = async () => { await api(`/api/zones/${z()}/playback/resume`, { method: "POST" }); refreshPlayback(); };
+  $("btn-next").onclick = async () => { await api(`/api/zones/${z()}/playback/next`, { method: "POST" }); refreshPlayback(); };
+  $("btn-fwd").onclick = async () => seekTo((await curPos()) + 10000);
+  $("btn-stop").onclick = async () => { await api(`/api/zones/${z()}/playback/stop`, { method: "POST" }); refreshPlayback(); };
+  $("clear-queue").onclick = async () => { await api(`/api/zones/${z()}/queue/clear`, { method: "POST" }); refreshPlayback(); };
 
-function openZonesModal() {
-  renderZonesModal();
-  $("zones-modal").hidden = false;
+  const seekBar = $("seek-bar");
+  seekBar.oninput = () => {
+    seekDragging = true;
+    $("now-pos").textContent = fmtTime(Number(seekBar.value));
+  };
+  seekBar.onchange = async () => {
+    const v = Number(seekBar.value);
+    seekDragging = false;
+    await seekTo(v);
+  };
 }
-function closeZonesModal() { $("zones-modal").hidden = true; $("zones-err").textContent = ""; }
 
 // === Playlists ===
 async function refreshPlaylists() {
   const r = await api("/api/playlists");
   playlists = r.playlists;
-}
-
-function openPlaylistsModal() {
-  $("playlists-err").textContent = "";
-  $("playlist-new-name").value = "";
-  $("playlists-detail-view").hidden = true;
-  $("playlists-list-view").hidden = false;
-  renderPlaylistsList();
-  $("playlists-modal").hidden = false;
-}
-function closePlaylistsModal() {
-  $("playlists-modal").hidden = true;
-  $("playlists-err").textContent = "";
 }
 
 function renderPlaylistsList() {
@@ -475,7 +529,6 @@ function renderPlaylistsList() {
         <button class="icon-btn danger" data-act="del" aria-label="删除" title="删除">✕</button>
       </div>`;
     row.querySelector(".playlist-row-title").textContent = p.name;
-    // 整行点击 = 进入详情（除按钮外）
     row.onclick = (ev) => {
       if (ev.target.closest(".icon-btn")) return;
       openPlaylistDetail(p.id);
@@ -534,8 +587,11 @@ async function openPlaylistDetail(playlistId) {
       await api(`/api/zones/${currentZoneId}/queue/load-playlist`, {
         method: "POST", json: { playlistId: p.id }
       });
-      closePlaylistsModal();
+      $("playlists-detail-view").hidden = true;
+      $("playlists-list-view").hidden = false;
+      renderPlaylistsList();
       await refreshPlayback();
+      flashUploadStatus(`✓ 已载入队列`);
     } catch (e) { $("playlists-err").textContent = e.message; }
   };
   $("pl-back-btn").onclick = () => {
@@ -665,12 +721,10 @@ function bindQueueDrag() {
       const src = e.dataTransfer.getData("text/plain") || dragSrcId;
       const dst = li.dataset.trackId;
       if (!src || !dst || src === dst) return;
-      // 拿到当前 queue（DOM 顺序即为视觉顺序）
       const ids = [...ql.querySelectorAll(".queue-item")].map((el) => el.dataset.trackId);
       const srcIdx = ids.indexOf(src);
       const dstIdx = ids.indexOf(dst);
       if (srcIdx < 0 || dstIdx < 0) return;
-      // 重排：把 src 移到 dst 之后（视觉上）
       const arr = ids.slice();
       const [moved] = arr.splice(srcIdx, 1);
       arr.splice(dstIdx, 0, moved);
@@ -683,41 +737,6 @@ function bindQueueDrag() {
       } catch (err) { alert(err.message); }
     });
   });
-}
-
-function renderZonesModal() {
-  const ul = $("zones-list");
-  ul.innerHTML = "";
-  for (const z of zones) {
-    const li = document.createElement("li");
-    li.className = "list-item";
-    li.innerHTML = `
-      <div class="list-item-main">
-        <div class="list-item-title"></div>
-        <div class="list-item-sub">#${z.id} · ${z.builtin ? "内置默认分区" : "可管理"}</div>
-      </div>
-      <div class="list-item-actions">
-        <button class="icon-btn" data-act="rename" aria-label="改名" title="改名">✎</button>
-        <button class="icon-btn danger" data-act="del" ${z.builtin ? "disabled" : ""} aria-label="删除" title="删除">✕</button>
-      </div>`;
-    li.querySelector(".list-item-title").textContent = z.name + (z.builtin ? "（默认）" : "");
-    li.querySelector('[data-act="rename"]').onclick = async () => {
-      const name = prompt("新名字", z.name);
-      if (!name) return;
-      try { await api(`/api/zones/${z.id}`, { method: "PATCH", json: { name } }); }
-      catch (e) { $("zones-err").textContent = e.message; return; }
-      await refreshZones();
-      renderZonesModal();
-    };
-    li.querySelector('[data-act="del"]').onclick = async () => {
-      if (!confirm(`删除分区「${z.name}」？该分区的设备将变为"未分区"。`)) return;
-      try { await api(`/api/zones/${z.id}`, { method: "DELETE" }); }
-      catch (e) { $("zones-err").textContent = e.message; return; }
-      await refreshZones();
-      renderZonesModal();
-    };
-    ul.appendChild(li);
-  }
 }
 
 function uploadFile(file) {
@@ -752,14 +771,22 @@ async function bootDashboard() {
   bindZoneControls();
 
   $("logout-btn").onclick = async () => { await api("/api/auth/logout", { method: "POST" }); location.reload(); };
-  $("zones-mgmt-btn").onclick = openZonesModal;
-  $("zones-close").onclick = closeZonesModal;
-  $("zones-modal").addEventListener("click", (e) => { if (e.target.id === "zones-modal") closeZonesModal(); });
 
-  // 歌单 + 加入歌单弹窗
-  $("playlists-btn").onclick = openPlaylistsModal;
-  $("playlists-close").onclick = closePlaylistsModal;
-  $("playlists-modal").addEventListener("click", (e) => { if (e.target.id === "playlists-modal") closePlaylistsModal(); });
+  // 左上管理 tab
+  for (const b of document.querySelectorAll(".manage-tabs .manage-tab")) {
+    b.onclick = () => switchManageTab(b.dataset.mtab);
+  }
+  $("zone-add-btn").onclick = async () => {
+    const name = prompt("新分区名称");
+    if (!name) return;
+    try {
+      const r = await api("/api/zones", { method: "POST", json: { name } });
+      await refreshZones();
+      switchZone(r.zone.id);
+    } catch (e) { alert(e.message); }
+  };
+
+  // 歌单创建
   $("playlist-create-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const name = $("playlist-new-name").value.trim();
@@ -772,6 +799,7 @@ async function bootDashboard() {
     } catch (e) { $("playlists-err").textContent = e.message; }
   });
 
+  // 加入歌单 picker
   $("picker-close").onclick = closePickerModal;
   $("picker-modal").addEventListener("click", (e) => { if (e.target.id === "picker-modal") closePickerModal(); });
   $("picker-create-form").addEventListener("submit", async (ev) => {
@@ -787,7 +815,7 @@ async function bootDashboard() {
     } catch (e) { $("picker-err").textContent = e.message; }
   });
 
-  // 模式切换
+  // 模式切换（顺序 / 单曲 / 随机 / 循环）
   for (const b of document.querySelectorAll("#mode-switch .mode-switch-btn")) {
     b.onclick = async () => {
       if (!currentZoneId) return;
@@ -807,16 +835,6 @@ async function bootDashboard() {
   $("track-edit-cancel").onclick = closeTrackEdit;
   $("track-edit-modal").addEventListener("click", (e) => { if (e.target.id === "track-edit-modal") closeTrackEdit(); });
   $("track-edit-form").addEventListener("submit", saveTrackEdit);
-
-  $("zone-add-btn").onclick = async () => {
-    const name = prompt("新分区名称");
-    if (!name) return;
-    try {
-      const r = await api("/api/zones", { method: "POST", json: { name } });
-      await refreshZones();
-      switchZone(r.zone.id);
-    } catch (e) { alert(e.message); }
-  };
 
   const uploadFileInput = $("upload-file");
   const uploadDrop = $("upload-drop");
@@ -846,7 +864,11 @@ async function bootDashboard() {
   await refreshTracks();
   await refreshZones();
   await refreshPlaylists();
-  setInterval(() => { refreshPlayback(); refreshZoneDevices(); }, 2000);
+  refreshZoneDevices();
+  setInterval(async () => {
+    try { await refreshPlayback(); } catch (e) { console.warn("refreshPlayback:", e.message); }
+    try { if (!volumeDragging) await refreshZoneDevices(); } catch (e) { console.warn("refreshZoneDevices:", e.message); }
+  }, 2000);
 }
 
 (async () => {

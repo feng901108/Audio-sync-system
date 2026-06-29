@@ -22,3 +22,6 @@ Screenshot*.png
 /.nas-setup.sh
 /deploy.cmd
 
+# 临时对比/备份包（不进 git）
+*.tar.gz
+

@@ -14,15 +14,21 @@ export class SyncClient {
     this.ws = null;
     this.ctx = null;
     this.gain = null;
-    this.currentSource = null;
-    this.currentBuffer = null;
+    // 流式播放：复用一个 HTMLAudioElement，接进 Web Audio graph
+    // （createMediaElementSource 每个 audio 元素只能调一次，故元素与节点一一复用）
+    this.audio = null;
+    this.mediaNode = null;
     this.currentTrackId = null;
     this.currentTrackUrl = null;
     this.currentDurationMs = 0;
     this.startServerTime = 0;
     this.trackOffsetMs = 0;
     this.isPlaying = false;
-    this.localStartCtxTime = 0;
+    this.playTimer = null;    // 定时起播（对齐服务端 startServerTime）
+    this.pauseTimer = null;   // 定时暂停（对齐服务端 atServerTime）
+    this.rateResetTimer = null;
+    this._gen = 0;            // 起播代次：快速切歌时让旧 loadedmetadata 回调自废
+    this._seekCooldownUntil = 0; // 强制 seek 后短暂屏蔽 drift，避免 seek 风暴
     this.clockSamples = [];
     this.listeners = new Set();
     this.pingTimer = null;
@@ -32,9 +38,6 @@ export class SyncClient {
     // 两层音量：master 来自服务端下发（admin 调的），local 是用户本机拉杆（0-1 倍率）
     this.masterVolume = 1;
     this.localVolume = 1;
-    // 预缓存：trackId -> { buffer, url }；进 zone 时后台 fetch+decode 队列里所有曲目
-    this._preloadCache = new Map();
-    this._preloadInFlight = new Set();
     this.status = {
       deviceId: null, connected: false, clockOffsetMs: 0, rttMs: 0,
       trackTitle: null, positionMs: 0, durationMs: 0,
@@ -58,6 +61,16 @@ export class SyncClient {
       this.gain.gain.value = 1;
       this.gain.connect(this.ctx.destination);
     }
+    // 流式播放元素 + 接入 Web Audio：音量走 gain，时钟基准仍是 ctx.currentTime
+    if (!this.audio) {
+      this.audio = new Audio();
+      // 同源部署不需要 crossOrigin；设了反而要求服务端 CORS 头，跨域缺失会被静音
+      this.audio.preload = "metadata"; // 大文件只加载头部，播放时按需 Range，降内存峰值
+      this.mediaNode = this.ctx.createMediaElementSource(this.audio);
+      this.mediaNode.connect(this.gain);
+      // 自然播完：等服务端 scheduleAdvance 下发 next/loop-one 重播，不主动改状态避免竞争
+      this.audio.onended = () => {};
+    }
     await this.ctx.resume();
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -72,7 +85,6 @@ export class SyncClient {
       }));
       this._startPing();
       this._startDrift();
-      this._preloadQueue();
     };
     this.ws.onmessage = (ev) => this._handle(JSON.parse(ev.data));
     this.ws.onclose = () => {
@@ -156,9 +168,12 @@ export class SyncClient {
       case "pause": {
         const atLocal = msg.atServerTime - this._clockOffset();
         const delay = Math.max(0, atLocal - Date.now());
-        setTimeout(() => this._stopAudio(false), delay);
-        this.isPlaying = false;
-        this._update({ isPlaying: false });
+        if (this.pauseTimer) clearTimeout(this.pauseTimer);
+        this.pauseTimer = setTimeout(() => {
+          try { this.audio?.pause(); } catch {}
+          this.isPlaying = false;
+          this._update({ isPlaying: false });
+        }, delay);
         return;
       }
       case "stop":
@@ -174,80 +189,101 @@ export class SyncClient {
     }
   }
 
+  // 流式起播：换曲才设 src（浏览器开始边下边播，不整文件入内存）→ seek 到 offset
+  // → 在服务端指定的 startServerTime 换算的本地时刻 play()。
   async _startTrack(trackId, trackUrl, durationMs, startServerTime, trackOffsetMs) {
-    if (!this.ctx) return;
-    if (this.currentTrackId !== trackId || this.currentTrackUrl !== trackUrl) {
-      // 优先用预缓存；没有就即时 fetch+decode（首次冷启动）
-      let buf = this._preloadCache.get(trackId)?.buffer;
-      if (!buf) {
-        buf = await this._fetchAndDecode(trackUrl);
-        if (!buf) return;
-      }
-      this.currentBuffer = buf;
+    if (!this.ctx || !this.audio) return;
+    const gen = ++this._gen;
+    const urlChanged = this.currentTrackUrl !== trackUrl;
+    if (urlChanged) {
       this.currentTrackId = trackId;
       this.currentTrackUrl = trackUrl;
       const fname = decodeURIComponent(trackUrl.split("/").pop() ?? "");
       this._update({ trackTitle: fname });
+    } else if (this.currentTrackId !== trackId) {
+      this.currentTrackId = trackId;
     }
     this.currentDurationMs = durationMs;
     this.startServerTime = startServerTime;
     this.trackOffsetMs = trackOffsetMs;
-    this._stopAudio(false);
-    if (!this.currentBuffer) return;
 
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.currentBuffer;
-    src.connect(this.gain);
-    const localTargetMs = startServerTime - this._clockOffset();
-    const delaySec = Math.max(0, (localTargetMs - Date.now()) / 1000);
-    const ctxStart = this.ctx.currentTime + delaySec;
-    src.start(ctxStart, trackOffsetMs / 1000);
-    this.currentSource = src;
-    this.localStartCtxTime = ctxStart - trackOffsetMs / 1000;
-    this.isPlaying = true;
-    this._update({ isPlaying: true, durationMs });
+    const begin = () => {
+      if (gen !== this._gen || !this.audio) return; // 已被更新的 _startTrack 取代，跳过
+      try { this.audio.currentTime = Math.max(0, trackOffsetMs / 1000); } catch {}
+      const localTargetMs = startServerTime - this._clockOffset();
+      const delay = Math.max(0, localTargetMs - Date.now());
+      if (this.playTimer) clearTimeout(this.playTimer);
+      this.playTimer = setTimeout(() => {
+        if (gen !== this._gen) return;
+        this.audio?.play().then(() => {
+          this.isPlaying = true;
+          this._update({ isPlaying: true, durationMs });
+        }).catch((e) => {
+          // autoplay policy 拒绝等：如实更新状态，避免 UI 显示播放中却无声
+          console.warn("[sync] play() rejected:", e?.message);
+          this.isPlaying = false;
+          this._update({ isPlaying: false });
+        });
+      }, delay);
+    };
 
-    src.onended = () => { if (this.currentSource === src) this.currentSource = null; };
+    if (urlChanged) {
+      // 先注册 listener 再设 src，避免 metadata 在注册前就到达导致 begin 永不执行
+      this.audio.addEventListener("loadedmetadata", begin, { once: true });
+      this.audio.src = trackUrl;
+      this.audio.load();
+    } else {
+      begin();
+    }
   }
 
   _stopAudio(clearBuffer) {
-    if (this.currentSource) {
-      try { this.currentSource.stop(); } catch {}
-      try { this.currentSource.disconnect(); } catch {}
-      this.currentSource = null;
-    }
-    if (clearBuffer) {
-      this.currentBuffer = null;
-      this.currentTrackId = null;
-      this.currentTrackUrl = null;
+    if (this.playTimer) { clearTimeout(this.playTimer); this.playTimer = null; }
+    if (this.pauseTimer) { clearTimeout(this.pauseTimer); this.pauseTimer = null; }
+    if (this.audio) {
+      try { this.audio.pause(); } catch {}
+      if (clearBuffer) {
+        try {
+          this.audio.currentTime = 0;
+          this.audio.removeAttribute("src");
+          this.audio.load();
+        } catch {}
+        this.currentTrackId = null;
+        this.currentTrackUrl = null;
+      }
     }
   }
 
   _drift() {
-    if (!this.ctx || !this.currentSource || !this.isPlaying) {
-      this._update({ positionMs: 0, driftMs: 0 });
+    if (!this.audio || !this.isPlaying) {
+      this._update({
+        positionMs: this.audio ? Math.max(0, Math.round(this.audio.currentTime * 1000)) : 0,
+        driftMs: 0,
+      });
       return;
     }
-    const actualSec = this.ctx.currentTime - this.localStartCtxTime;
+    // 强制 seek 后屏蔽一小段，避免 seek 未完成时再次判定漂移触发 seek 风暴
+    if (Date.now() < this._seekCooldownUntil) return;
+    const actualSec = this.audio.currentTime;
     const expectedSec = (this._serverNow() - this.startServerTime) / 1000 + this.trackOffsetMs / 1000;
     const driftMs = (actualSec - expectedSec) * 1000;
     this._update({ positionMs: Math.max(0, Math.round(actualSec * 1000)), driftMs: Math.round(driftMs) });
 
     const abs = Math.abs(driftMs);
     if (abs >= 200) {
-      // 重置 startServerTime 为当前服务器时间，避免 expectedSec 公式里 trackOffsetMs 与 elapsed 双重计算
-      const serverNow = this._serverNow();
-      this._startTrack(this.currentTrackId, this.currentTrackUrl, this.currentDurationMs, serverNow, Math.max(0, Math.round(expectedSec * 1000)));
+      // 偏差大：强制对齐到期望位置（等价 seek，不重启元素）
+      this._seekCooldownUntil = Date.now() + 2000;
+      try { this.audio.currentTime = Math.max(0, expectedSec); } catch {}
       return;
     }
-    if (abs >= 30 && this.currentSource.playbackRate) {
+    if (abs >= 30) {
+      // 小偏差：微调 playbackRate 追平，RATE_LIMIT_MS 后回 1
       const rate = driftMs > 0 ? 1 - RATE_TWEAK : 1 + RATE_TWEAK;
-      try {
-        this.currentSource.playbackRate.setValueAtTime(rate, this.ctx.currentTime);
-        setTimeout(() => {
-          try { this.currentSource?.playbackRate.setValueAtTime(1, this.ctx.currentTime); } catch {}
-        }, RATE_LIMIT_MS);
-      } catch {}
+      try { this.audio.playbackRate = rate; } catch {}
+      if (this.rateResetTimer) clearTimeout(this.rateResetTimer);
+      this.rateResetTimer = setTimeout(() => {
+        try { if (this.audio) this.audio.playbackRate = 1; } catch {}
+      }, RATE_LIMIT_MS);
     }
   }
 
@@ -255,46 +291,5 @@ export class SyncClient {
     this.localVolume = Math.max(0, Math.min(1, Number(v)));
     this._applyVolume();
     this._update({ volume: this.masterVolume * this.localVolume, localVolume: this.localVolume });
-  }
-
-  // === 预缓存 ===
-
-  async _fetchAndDecode(url) {
-    if (!this.ctx) return null;
-    const r = await fetch(url);
-    const ab = await r.arrayBuffer();
-    return await this.ctx.decodeAudioData(ab);
-  }
-
-  // 从服务端拉队列和曲目元数据，依次后台 fetch+decode
-  async _preloadQueue() {
-    try {
-      const r = await fetch(`/api/zones/${this.zoneId}/snapshot`);
-      const snap = await r.json();
-      const ids = [];
-      if (snap.track) ids.push(snap.track.id);
-      for (const tid of snap.queue) ids.push(tid);
-      const tracksRes = await fetch("/api/tracks");
-      const tracks = (await tracksRes.json()).tracks;
-      const byId = new Map(tracks.map((t) => [t.id, t]));
-      for (const id of ids) {
-        const t = byId.get(id);
-        if (!t) continue;
-        this._preloadTrack(t.id, `/audio/${t.filename}`);
-      }
-    } catch (e) {
-      // 静默失败：预缓存是优化路径，失败就走即时 fetch
-    }
-  }
-
-  _preloadTrack(trackId, url) {
-    if (this._preloadCache.has(trackId) || this._preloadInFlight.has(trackId)) return;
-    this._preloadInFlight.add(trackId);
-    this._fetchAndDecode(url)
-      .then((buf) => {
-        if (buf) this._preloadCache.set(trackId, { buffer: buf, url });
-      })
-      .catch(() => {})
-      .finally(() => this._preloadInFlight.delete(trackId));
   }
 }
