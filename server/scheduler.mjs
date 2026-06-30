@@ -1,10 +1,31 @@
 import { db } from "./db.mjs";
 
-export const PRELOAD_MS = 1500;
+export const PRELOAD_MS = 1500;        // 基础预留时间（毫秒），A7 可被加载耗时动态拉高
 const DEFAULT_ZONE = 1;
 
 let _hub = null;
 export function setHub(hub) { _hub = hub; }
+
+// 动态 PRELOAD_MS：记录每个 device 最近一次 metadata 加载耗时，play 时按 zone 内最慢设备拉长
+const loadedMsByDevice = new Map(); // deviceId -> loadedMs
+
+export function recordLoadedMs(deviceId, ms) {
+  if (!deviceId || !Number.isFinite(ms) || ms <= 0) return;
+  loadedMsByDevice.set(deviceId, ms);
+}
+
+// 按当前 zone 内活跃设备的最大 loadedMs 决定本次 play 预留时间：
+// loadedMs 越大的设备 metadata 加载越慢，预留必须留够 buffer × 2 + 500ms 余量
+export function getEffectivePreloadMs(zoneId) {
+  const base = PRELOAD_MS;
+  if (!_hub) return base;
+  let maxLoaded = 0;
+  for (const id of _hub.onlineDeviceIdsInZone(zoneId)) {
+    const m = loadedMsByDevice.get(id);
+    if (m && m > maxLoaded) maxLoaded = m;
+  }
+  return Math.max(base, Math.round(maxLoaded * 2) + 500);
+}
 
 // 每 zone 一份调度状态
 const zones = new Map();
@@ -60,7 +81,9 @@ export function play(zoneId, trackId, offsetMs = 0) {
   if (trackId === undefined) { trackId = zoneId; zoneId = DEFAULT_ZONE; } // 兼容 play(trackId, offset)
   const t = getTrack(trackId);
   if (!t) return { ok: false, error: "曲目不存在" };
-  const startServerTime = Date.now() + PRELOAD_MS;
+  // 动态 PRELOAD_MS：按 zone 内最慢设备的 metadata 加载耗时拉长，确保所有设备都有足够 buffer 时间
+  const effectivePreload = getEffectivePreloadMs(zoneId);
+  const startServerTime = Date.now() + effectivePreload;
   db.prepare(`UPDATE playback_state
     SET track_id = ?, start_server_time = ?, track_offset_ms = ?,
         is_playing = 1, updated_at = ? WHERE zone_id = ?`)

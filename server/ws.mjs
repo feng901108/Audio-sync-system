@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "./db.mjs";
-import { snapshot, PRELOAD_MS } from "./scheduler.mjs";
+import { snapshot, PRELOAD_MS, recordLoadedMs } from "./scheduler.mjs";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const DEFAULT_ZONE = 1;
@@ -8,6 +8,9 @@ const DEFAULT_ZONE = 1;
 export const STALE_MS = 30000;
 // 定期扫描间隔
 export const SWEEP_INTERVAL_MS = 5000;
+// 应用层心跳间隔：服务端主动发 ping frame（WS 协议层 0x9），浏览器自动回 pong frame，
+// 不污染应用消息流。比纯靠 lastSeenAt 早发现"半开"连接（客户端实际断了但 TCP 还没 RST）
+const HEARTBEAT_INTERVAL_MS = 10000;
 
 export function isWebSocketUpgrade(req) {
   return (
@@ -204,6 +207,24 @@ class Hub {
     return n;
   }
 
+  // 协议层心跳：向每个连接发空 ping frame（WS opcode 0x9），浏览器自动回 pong frame
+  // （见 WSConn.parse 中 opcode === 0x9 处理）。失败说明半开，主动 detach。
+  pingAll() {
+    const pingPayload = Buffer.alloc(0);
+    const frame = encodeFrame(pingPayload, 0x9);
+    let killed = 0;
+    for (const [id, e] of this.conns) {
+      try {
+        e.conn.socket.write(frame);
+      } catch {
+        try { e.conn.close(4003); } catch {}
+        this.conns.delete(id);
+        killed++;
+      }
+    }
+    return killed;
+  }
+
   // 保留旧 API 兼容（当前代码未使用，供可能的日志/监控调用）
   broadcast(msg) {
     let n = 0;
@@ -266,6 +287,15 @@ export function handleUpgrade(req, socket) {
       if (conn.deviceId) {
         db.prepare("UPDATE devices SET last_seen_at = ? WHERE id = ?")
           .run(Date.now(), conn.deviceId);
+      }
+      return;
+    }
+    // A7: 客户端上报首屏 metadata 加载耗时，用于动态调整下次 play 的 PRELOAD_MS
+    if (msg.type === "reportLoaded") {
+      const ms = Number(msg.loadedMs);
+      // 合理范围 0 < ms < 30s（防异常值）
+      if (conn.deviceId && Number.isFinite(ms) && ms > 0 && ms < 30000) {
+        recordLoadedMs(conn.deviceId, ms);
       }
       return;
     }

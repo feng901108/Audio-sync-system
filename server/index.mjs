@@ -4,7 +4,7 @@ import { resolve, extname, dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { db } from "./db.mjs";
 import { findAdminByUsername, verifyPassword, createSession, getSession, destroySession, adminCount } from "./auth.mjs";
-import { handleUpgrade, hub, STALE_MS, SWEEP_INTERVAL_MS } from "./ws.mjs";
+import { handleUpgrade, hub, STALE_MS, SWEEP_INTERVAL_MS, HEARTBEAT_INTERVAL_MS } from "./ws.mjs";
 import {
   setHub, snapshot, play, pause, resume, stop, seek, next, prev,
   enqueue, clearQueue, setQueue, setMode,
@@ -585,4 +585,8 @@ server.listen(PORT, HOST, () => {
     const n = hub.sweep(STALE_MS);
     if (n > 0) console.log(`[sweep] 清理 ${n} 个僵尸连接（>${STALE_MS}ms 未活动）`);
   }, SWEEP_INTERVAL_MS).unref();
+  // 协议层心跳：每 10s 发 ping frame，比 sweep（30s 阈值）早发现半开连接
+  setInterval(() => {
+    hub.pingAll();
+  }, HEARTBEAT_INTERVAL_MS).unref();
 });
