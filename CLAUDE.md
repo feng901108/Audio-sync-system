@@ -26,6 +26,7 @@ juguang/
 │  ├─ sync.js     # 同步客户端核心
 │  └─ styles.css  # 设计系统
 ├─ scripts/       # 本机 → NAS 部署脚本
+├─ docs/          # 衍生文档（客户端移植指南等，非运行时必需）
 ├─ data/          # 运行时（gitignore）
 │  ├─ audio/      # 上传的音频（gitignore）
 │  └─ app.db      # SQLite（gitignore）
@@ -68,8 +69,8 @@ juguang/
 node server/init-admin.mjs admin yourpassword
 
 # 本机开发
-npm start                # 生产方式
-npm run dev              # --watch 热重启
+npm start                # 生产方式（本机长开推荐，避开 --watch 被 OneDrive 同步触发）
+npm run dev              # --watch 热重启（项目在 OneDrive 下，同步会频繁重启，仅短测用）
 
 # 本机 → NAS 一键部署（commit + push + WebDAV 同步）
 npm run deploy -- "feat: 改动说明"
@@ -97,12 +98,12 @@ node --check server/scheduler.mjs
 | 文件 | 职责 |
 |---|---|
 | `server/index.mjs` | HTTP 路由 + 静态托管 + WebSocket upgrade |
-| `server/scheduler.mjs` | 播放状态机：play/pause/resume/stop/seek/next/queue、zone CRUD、playlist CRUD |
+| `server/scheduler.mjs` | 播放状态机：play/pause/resume/stop/seek/next/prev/queue、mode（sequential/loop-one/shuffle/loop-all）、zone CRUD、playlist CRUD |
 | `server/ws.mjs` | 自实现 WebSocket + Hub（多设备、zone-scoped 广播、僵尸清理） |
 | `server/db.mjs` | SQLite 表结构（admins / tracks / devices / playback_state / sessions / zones / playlists） |
 | `server/auth.mjs` | scrypt 密码哈希 + 自管 session（cookie: `juguang.sid`） |
-| `server/multipart.mjs` | 自实现 multipart/form-data 解析（上限 200MB） |
-| `server/audio-probe.mjs` | MP3 时长探测（首帧 bitrate 推算，CBR 准，VBR 近似） |
+| `server/multipart.mjs` | 自实现 multipart/form-data 解析（上限 1GB） |
+| `server/audio-probe.mjs` | MP3 / WAV 时长探测（MP3 首帧 bitrate 推算 CBR 准 VBR 近似；WAV 读 RIFF data/byteRate） |
 | `server/init-admin.mjs` | 初始化管理员 CLI |
 | `web/sync.js` | 客户端同步核心：NTP 时钟同步、漂移修正、Web Audio 调度 |
 | `scripts/deploy.sh` | 本机一键部署（git + WebDAV） |
@@ -110,12 +111,13 @@ node --check server/scheduler.mjs
 **同步原理要点**（详见 README §"同步原理"）：
 
 1. 客户端每 2s ping 一次，取最近 10 次 RTT 最小 3 次的 offset 中位数作为时钟差
-2. 服务端 `play` 命令带 `startServerTime = now + 800ms`（`PRELOAD_MS`），客户端换算到本地时刻精确 `start()`
-3. 每 3s 比对实际位置 vs 应播位置：30–200ms 用 ±0.5% 速率追平，>200ms 直接 seek
+2. 服务端 `play` 命令带 `startServerTime = now + 1500ms`（`PRELOAD_MS`），客户端换算到本地时刻精确 `start()`
+3. 每 1.5s 比对实际位置 vs 应播位置：30–200ms 用 ±0.3% 速率追平（持续 1.5s 后回 1），>200ms 回到期望位置前 100ms 让音频自然追（避免"扑通"声）
 
 **可调旋钮**：
-- `server/scheduler.mjs` `PRELOAD_MS`（默认 800，慢端可调 1200）
+- `server/scheduler.mjs` `PRELOAD_MS`（默认 1500，慢端可再调高）
 - `web/sync.js` `PING_INTERVAL_MS`（默认 2000，可调到 1000 加快收敛）
+- `web/sync.js` `DRIFT_CHECK_MS`（默认 1500，更小更平滑但 CPU 多）
 - `web/sync.js` 漂移阈值 30/200 ms
 
 ## 6. 验证流程

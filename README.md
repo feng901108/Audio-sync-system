@@ -9,11 +9,11 @@
 - **多设备同步播放**：NTP 风格时钟同步 + 预约调度 + 漂移修正
 - **多分区架构**：每分区独立播放状态、队列、广播；曲目库全局共享
 - **歌单管理**：创建 / 改名 / 删除歌单，批量载入分区队列
-- **播放模式**：顺序 / 单曲循环 / 歌单循环
+- **播放模式**：顺序 / 单曲循环 / 随机 / 歌单循环
 - **曲目管理**：上传（多文件 + 进度条）、删除、编辑标题 / 艺人
 - **队列拖拽排序**：HTML5 原生拖拽改顺序
 - **两层音量**：服务端 master × 客户端 local，admin 调音量不覆盖用户本机
-- **设备管理**：在线状态、改名、调音量、移动分区、移除
+- **设备管理**：分活跃 / 历史两段展示、改名、调音量、移动分区、移除（活跃设备删除会同时断开 WS）
 - **零公网依赖**：自实现 WebSocket（RFC6455）、自管 session（scrypt 哈希）
 
 ## 架构
@@ -104,19 +104,19 @@ bash /vol1/1000/juguang/deploy.sh
 juguang/
 ├─ package.json              # 零 dependencies，纯启动脚本
 ├─ server/
-│  ├─ index.mjs              # HTTP 入口 + 路由注册（~480 行）
+│  ├─ index.mjs              # HTTP 入口 + 路由注册（~590 行）
 │  ├─ db.mjs                 # node:sqlite 表结构（admins / tracks / devices /
 │  │                          #   playback_state / sessions / zones / playlists）
 │  ├─ auth.mjs               # scrypt 密码 + 自管 session
-│  ├─ scheduler.mjs          # 同步调度核心：play/pause/seek/next/enqueue、
-│  │                          #   zone CRUD、playlist CRUD
+│  ├─ scheduler.mjs          # 同步调度核心：play/pause/resume/stop/seek/next/prev、
+│  │                          #   mode（顺序/单曲/随机/循环）、zone CRUD、playlist CRUD
 │  ├─ ws.mjs                 # 自实现 WebSocket + Hub（zone-scoped broadcast）
-│  ├─ multipart.mjs          # 自实现 multipart/form-data 解析（200MB 上限）
-│  ├─ audio-probe.mjs        # MP3 时长探测（CBR 准，VBR 近似）
+│  ├─ multipart.mjs          # 自实现 multipart/form-data 解析（1GB 上限）
+│  ├─ audio-probe.mjs        # MP3 / WAV 时长探测（MP3 首帧 bitrate 推算 CBR 准 VBR 近似；WAV 读 RIFF data/byteRate）
 │  └─ init-admin.mjs         # 初始化管理员 CLI
 ├─ web/                      # 零构建，直接静态托管
 │  ├─ index.html             # 聆听页 /
-│  ├─ admin.html             # 管理页 /admin（左/右分栏单屏布局）
+│  ├─ admin.html             # 管理页 /admin（四象限布局：左上管理tab / 右上播放器 / 左下上传+曲库 / 右下队列）
 │  ├─ sync.js                # 同步客户端核心（NTP + Web Audio API）
 │  └─ styles.css             # 设计系统（Apple Music 风格：纯白 + #ff2d55）
 ├─ scripts/
@@ -144,7 +144,7 @@ juguang/
 | GET | `/api/auth/me` | 当前登录状态 |
 | POST | `/api/auth/login` / `logout` | 登录 / 登出 |
 | GET | `/api/tracks` | 列出全部曲目 |
-| POST | `/api/tracks` | 上传（multipart，多文件，单文件 ≤200MB） |
+| POST | `/api/tracks` | 上传（multipart，多文件，单文件 ≤1GB） |
 | PATCH | `/api/tracks/:id` | 改标题 / 艺人 |
 | DELETE | `/api/tracks/:id` | 删除（连带文件） |
 | GET | `/api/devices` | 全部设备 |
@@ -157,8 +157,8 @@ juguang/
 | DELETE | `/api/zones/:id` | 删除（非内置） |
 | GET | `/api/zones/:zoneId/snapshot` | 该分区播放快照 |
 | POST | `/api/zones/:zoneId/playback/play` | 播放（`{trackId, offsetMs?}`） |
-| POST | `/api/zones/:zoneId/playback/pause` / `resume` / `stop` / `next` / `seek` | |
-| PATCH | `/api/zones/:zoneId/playback/mode` | 模式：`sequential` / `loop-one` / `loop-all` |
+| POST | `/api/zones/:zoneId/playback/pause` / `resume` / `stop` / `prev` / `next` / `seek` | |
+| PATCH | `/api/zones/:zoneId/playback/mode` | 模式：`sequential` / `loop-one` / `shuffle` / `loop-all` |
 | POST | `/api/zones/:zoneId/queue/enqueue` / `replace` / `clear` | 队列操作 |
 | POST | `/api/zones/:zoneId/queue/load-playlist` | 用歌单替换队列 |
 | GET | `/api/playlists` | 全部歌单 |
@@ -177,21 +177,24 @@ juguang/
 服务端调度器是事实唯一来源。客户端只听命令，不传时钟。
 
 1. **NTP 风格时钟同步**：每 2s 客户端 ping 服务端，取最近 10 次 RTT 最小 3 次的 offset 中位数作为本地-服务端时钟差。
-2. **预约调度**：`play` 命令带 `startServerTime = now + PRELOAD_MS`（默认 800ms 预加载缓冲），客户端换算到本地时刻精确 `start()`。
-3. **漂移修正**：每 3s 比对应播位置 vs 实播位置：30–200ms 用 ±0.5% 速率追平，>200ms 直接重新 seek。
+2. **预约调度**：`play` 命令带 `startServerTime = now + PRELOAD_MS`（默认 1500ms 预加载缓冲），客户端换算到本地时刻精确 `start()`。
+3. **漂移修正**：每 1.5s 比对应播位置 vs 实播位置：30–200ms 用 ±0.3% 速率追平（持续 1.5s 后回 1），>200ms 回到期望位置前 100ms 让音频自然追（避免"扑通"声）。
 4. **中途加入**：新连接拿到 snapshot 时算投影位置 + 新 `startServerTime`，避免进度跳变。
 
 可调旋钮：
-- `server/scheduler.mjs` `PRELOAD_MS`（默认 800，慢端调到 1200）
+- `server/scheduler.mjs` `PRELOAD_MS`（默认 1500，慢端可再调高）
 - `web/sync.js` `PING_INTERVAL_MS`（默认 2000，可调到 1000 加快收敛）
+- `web/sync.js` `DRIFT_CHECK_MS`（默认 1500，更小更平滑但 CPU 多）
 - `web/sync.js` 漂移阈值 30/200ms，按现场实测
 
 ## 设计
 
 - **设计语言**：Apple Music 风格（纯白 + #ff2d55 强调色 + SF Pro 字体 + 8px 网格 + 28px 大圆角）
-- **管理端布局**：左 / 右分栏单屏
-  - 左列：分区 tab（内嵌顶部，无弹窗）+ 上传 + 曲库 + 本分区设备
-  - 右列：现在播放 hero + 队列（可拖拽排序）
+- **管理端布局**：四象限单屏（2×2 grid）
+  - 左上：设备 / 歌单 / 分区 三 tab 管理（渐变背景，无弹窗）
+  - 右上：现在播放 hero + 进度条 + 全套控件（上一首 / 快退 / 暂停 / 继续 / 快进 / 下一首 / 停止）+ 模式切换（顺序 / 单曲 / 随机 / 循环）
+  - 左下：上传 + 曲库列表
+  - 右下：当前队列（可拖拽排序）
 - **聆听端**：单设备单 zone；展示 zone 标签、漂移、RTT、时钟差、本机音量
 
 ## 验收清单
@@ -215,7 +218,8 @@ curl http://localhost:3000/api/health   # → {ok: true}
 
 ## 已知限制
 
-- **时长探测**：仅 MP3 准确；M4A / AAC / OGG / WAV / FLAC 直接返 0，前端 `<audio>` metadata 兜底
+- **时长探测**：MP3 / WAV 准确；M4A / AAC / OGG / FLAC 直接返 0，前端 `<audio>` metadata 兜底
+- **同步精度**：流式 HTMLAudioElement 播放（非 AudioBufferSource 整文件解码，避免大文件内存溢出），位置靠 currentTime + 漂移修正，非采样级精确；目标 < 80ms 相位差
 - **session 不续期**：只检查 `expires_at`，长时间不操作会突然掉登录
 - **iOS Safari 后台 / 锁屏**：AudioContext 暂停，需保持页面前台
 - **HTTPS**：生产部署需前置反代（如 Caddy / Nginx / fnOS FN Connect）
@@ -226,7 +230,6 @@ curl http://localhost:3000/api/health   # → {ok: true}
 - 定时广播 / BGM 调度（cron）
 - Android 原生客户端（Kotlin + ExoPlayer + Foreground Service）
 - mDNS 自动发现服务端
-- 队列拖拽排序持久化已有，前端 UI 已实现
 
 ---
 

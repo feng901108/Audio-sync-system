@@ -57,13 +57,18 @@
           <button class="manage-tab" data-mtab="zones">分区</button>
         </nav>
 
-        <!-- 设备：全部设备 + 音量 + 分区分配 -->
+        <!-- 设备：分活跃 / 历史两段（活跃是当前 WS 在线；历史是曾经连过但现在离线的，可删除） -->
         <div id="view-devices" class="manage-panel">
           <header class="panel-head">
             <h3 class="panel-title-sm">设备</h3>
-            <span class="muted" id="device-count" style="font-size:11px;">0 台</span>
+            <span class="muted" id="device-count" style="font-size:11px;"></span>
           </header>
-          <ul id="device-list" class="list list-compact"></ul>
+          <div class="device-section-label">活跃 <span id="device-active-count" class="muted"></span></div>
+          <ul id="device-list-active" class="list list-compact"></ul>
+          <details id="device-history-details" class="device-history">
+            <summary class="device-section-label">历史 <span id="device-history-count" class="muted"></span></summary>
+            <ul id="device-list-history" class="list list-compact"></ul>
+          </details>
         </div>
 
         <!-- 歌单：列表 / 详情 两级 -->
@@ -378,30 +383,33 @@ async function refreshTracks() {
   }
 }
 
-// 全部设备 + 音量 + 分区分配（不再只看当前分区）
+// 设备分两段渲染：活跃（WS 在线）/ 历史（曾连过但离线，可删除）
 async function refreshZoneDevices() {
   const r = await api("/api/devices");
-  const ul = $("device-list");
-  ul.innerHTML = "";
+  const active = r.devices.filter((d) => d.online);
+  const history = r.devices.filter((d) => !d.online);
   $("device-count").textContent = `${r.devices.length} 台`;
-  if (r.devices.length === 0) {
-    ul.innerHTML = '<li class="list-empty">暂无设备</li>';
-    return;
-  }
-  for (const d of r.devices) {
+  $("device-active-count").textContent = `${active.length}`;
+  $("device-history-count").textContent = `${history.length}`;
+  // 历史段无设备时折叠 details，避免占空间
+  $("device-history-details").open = history.length > 0;
+
+  const renderRow = (d, isHistory) => {
     const li = document.createElement("li");
-    li.className = "list-item list-item-compact";
+    li.className = "list-item list-item-compact" + (isHistory ? " list-item-history" : "");
     const zoneOpts = `<option value="" ${d.zone_id == null ? "selected" : ""}>未分区</option>`
       + zones.map((z) => `<option value="${z.id}" ${d.zone_id == z.id ? "selected" : ""}>${z.name}</option>`).join("");
+    const ago = fmtAgo(Number(d.last_seen_at));
     li.innerHTML = `
       <div class="list-item-main">
         <div class="list-item-title"><span class="dot ${d.online ? "ok" : ""}"></span><span class="dname"></span></div>
-        <div class="list-item-sub">${d.kind} · ${d.id.slice(0, 6)}${d.ip ? " · " + d.ip : ""}</div>
+        <div class="list-item-sub">${d.kind} · ${d.id.slice(0, 6)}${d.ip ? " · " + d.ip : ""}${isHistory ? " · " + ago : ""}</div>
       </div>
       <div class="list-item-actions">
         <select class="device-zone-sel" aria-label="分配分区" title="分配分区">${zoneOpts}</select>
         <input type="range" min="0" max="1" step="0.01" value="${d.volume}" style="width:56px;" aria-label="音量" />
         <span class="muted mono-sm">${Math.round(d.volume * 100)}%</span>
+        <button class="icon-btn danger dev-del-btn" title="删除${isHistory ? "历史记录" : "并断开连接"}" aria-label="删除设备">✕</button>
       </div>`;
     li.querySelector(".dname").textContent = d.name;
     const sel = li.querySelector("select");
@@ -419,8 +427,39 @@ async function refreshZoneDevices() {
       catch (e) { alert(e.message); }
       volumeDragging = false;
     };
-    ul.appendChild(li);
+    li.querySelector(".dev-del-btn").onclick = async () => {
+      if (!confirm(`删除设备 "${d.name}"？${isHistory ? "" : "（设备在线，将被断开）"}`)) return;
+      try { await api(`/api/devices/${d.id}`, { method: "DELETE" }); }
+      catch (e) { alert(e.message); return; }
+      refreshZoneDevices();
+    };
+    return li;
+  };
+
+  const ulA = $("device-list-active");
+  ulA.innerHTML = "";
+  if (active.length === 0) {
+    ulA.innerHTML = '<li class="list-empty">暂无活跃设备</li>';
+  } else {
+    for (const d of active) ulA.appendChild(renderRow(d, false));
   }
+  const ulH = $("device-list-history");
+  ulH.innerHTML = "";
+  if (history.length === 0) {
+    ulH.innerHTML = '<li class="list-empty muted">无历史设备</li>';
+  } else {
+    for (const d of history) ulH.appendChild(renderRow(d, true));
+  }
+}
+
+// 相对时间（"刚刚 / 5 分钟前 / 2 小时前 / 昨天 / 3 天前"）
+function fmtAgo(ms) {
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  if (diff < 172_800_000) return "昨天";
+  return `${Math.floor(diff / 86_400_000)} 天前`;
 }
 
 async function refreshPlayback() {

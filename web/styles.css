@@ -1140,6 +1140,37 @@ input[type="file"] {
 .list-item-compact .icon-btn { width: 28px; height: 28px; }
 .list-item-compact .icon-btn::before, .list-item-compact .icon-btn { font-size: 13px; }
 
+/* 设备面板：分段标题 + 历史段折叠 + 历史行灰显 */
+.device-section-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  margin-top: var(--sp-2);
+  padding: 0 var(--sp-1);
+}
+.device-history { margin-top: var(--sp-2); }
+.device-history > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.device-history > summary::-webkit-details-marker { display: none; }
+.device-history > summary::before {
+  content: "▸";
+  display: inline-block;
+  font-size: 10px;
+  transition: transform var(--t-fast) var(--ease);
+  width: 10px;
+}
+.device-history[open] > summary::before { transform: rotate(90deg); }
+.list-item-history { opacity: 0.55; }
+.list-item-history:hover { opacity: 1; }
+
 /* compact upload */
 .upload-compact {
   display: flex;

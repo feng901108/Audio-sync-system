@@ -1,9 +1,12 @@
 const PING_INTERVAL_MS = 2000;
 const PING_BURST_COUNT = 5;
 const PING_BURST_INTERVAL_MS = 100;
-const DRIFT_CHECK_MS = 3000;
-const RATE_TWEAK = 0.005;
-const RATE_LIMIT_MS = 200;
+const DRIFT_CHECK_MS = 1500;      // 缩短到 1.5s：减少漂移积累，避免大跳跃触发强 seek
+const RATE_TWEAK = 0.003;         // 0.3%（原 0.5%）：蓝牙/外置 DAC 上 ±0.5% 阶跃有可闻咔嗒声
+const RATE_LIMIT_MS = 1500;       // 长持续：让"减速-恢复"覆盖整个检查周期，听感平滑而非阶跃
+const HARD_SEEK_BACK_MS = 100;    // 强 seek 前回退 100ms：让音频自然追上来，避免大跳跃的"扑通"声
+const HARD_SEEK_THRESHOLD_MS = 200;
+const SOFT_SEEK_THRESHOLD_MS = 30;
 
 export class SyncClient {
   constructor(deviceName, kind = "web", zoneId = 1) {
@@ -270,14 +273,17 @@ export class SyncClient {
     this._update({ positionMs: Math.max(0, Math.round(actualSec * 1000)), driftMs: Math.round(driftMs) });
 
     const abs = Math.abs(driftMs);
-    if (abs >= 200) {
-      // 偏差大：强制对齐到期望位置（等价 seek，不重启元素）
-      this._seekCooldownUntil = Date.now() + 2000;
-      try { this.audio.currentTime = Math.max(0, expectedSec); } catch {}
+    if (abs >= HARD_SEEK_THRESHOLD_MS) {
+      // 大偏差：回退 100ms 再 seek，让音频自然推进补回对齐点，
+      // 比直接跳 1-5 秒造成的"扑通"声听感好得多。短冷却（800ms），因为跳跃小。
+      this._seekCooldownUntil = Date.now() + 800;
+      try {
+        this.audio.currentTime = Math.max(0, expectedSec - HARD_SEEK_BACK_MS / 1000);
+      } catch {}
       return;
     }
-    if (abs >= 30) {
-      // 小偏差：微调 playbackRate 追平，RATE_LIMIT_MS 后回 1
+    if (abs >= SOFT_SEEK_THRESHOLD_MS) {
+      // 小偏差：长持续低幅微调 playbackRate（±0.3% 持续 1.5s），听感平滑而非阶跃
       const rate = driftMs > 0 ? 1 - RATE_TWEAK : 1 + RATE_TWEAK;
       try { this.audio.playbackRate = rate; } catch {}
       if (this.rateResetTimer) clearTimeout(this.rateResetTimer);
