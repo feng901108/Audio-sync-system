@@ -92,7 +92,7 @@ fi
 
 # 用 rsync 优先，没有就退到 cp
 if command -v rsync >/dev/null 2>&1; then
-  echo "  · rsync server/  web/  scripts/  *.json *.yml Dockerfile .env.example .gitignore .dockerignore"
+  echo "  · rsync server/  web/  scripts/  docs/  *.json *.yml Dockerfile .env.example .gitignore .dockerignore"
   rsync -av --delete \
     --exclude='data/' \
     --exclude='node_modules/' \
@@ -102,6 +102,7 @@ if command -v rsync >/dev/null 2>&1; then
     "$PROJECT_ROOT/server/" "$NAS_WEBDAV/server/"
   rsync -av --delete "$PROJECT_ROOT/web/" "$NAS_WEBDAV/web/"
   rsync -av --delete "$PROJECT_ROOT/scripts/" "$NAS_WEBDAV/scripts/"
+  rsync -av --delete "$PROJECT_ROOT/docs/" "$NAS_WEBDAV/docs/"
   rsync -av \
     "$PROJECT_ROOT/package.json" \
     "$PROJECT_ROOT/Dockerfile" \
@@ -117,6 +118,8 @@ else
   cp -vR "$PROJECT_ROOT/server/." "$NAS_WEBDAV/server/" >/dev/null
   cp -vR "$PROJECT_ROOT/web/." "$NAS_WEBDAV/web/" >/dev/null
   cp -vR "$PROJECT_ROOT/scripts/." "$NAS_WEBDAV/scripts/" >/dev/null
+  mkdir -p "$NAS_WEBDAV/docs"
+  cp -vR "$PROJECT_ROOT/docs/." "$NAS_WEBDAV/docs/" >/dev/null
   cp -v \
     "$PROJECT_ROOT/package.json" \
     "$PROJECT_ROOT/Dockerfile" \
