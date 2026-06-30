@@ -10,7 +10,7 @@ export const STALE_MS = 30000;
 export const SWEEP_INTERVAL_MS = 5000;
 // 应用层心跳间隔：服务端主动发 ping frame（WS 协议层 0x9），浏览器自动回 pong frame，
 // 不污染应用消息流。比纯靠 lastSeenAt 早发现"半开"连接（客户端实际断了但 TCP 还没 RST）
-const HEARTBEAT_INTERVAL_MS = 10000;
+export const HEARTBEAT_INTERVAL_MS = 10000;
 
 export function isWebSocketUpgrade(req) {
   return (
