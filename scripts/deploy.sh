@@ -60,14 +60,24 @@ if [ -z "$(git status --short)" ]; then
   echo "[$(date +%H:%M:%S)] 没有新改动，跳过 git commit/push"
   SKIP_GIT=1
 else
+  # 用 -u 而非 -A：只 stage 已跟踪文件的修改，不收未跟踪文件。
+  # 防止 docs/ 下临时放的参考文档、截图、调试文件被误提交。
+  # 新文件要入 git 请先手动 git add <file>。
   echo ""
-  echo "[$(date +%H:%M:%S)] git add + commit"
-  git add -A
-  git commit -m "$MSG" || {
-    echo "✗ git commit 失败"
-    exit 1
-  }
-  SKIP_GIT=0
+  echo "[$(date +%H:%M:%S)] git add -u + commit（只 add 已跟踪文件修改）"
+  git add -u
+  # 再次检查：add -u 之后可能没东西了（已跟踪文件无修改但有 untracked）
+  if [ -z "$(git diff --cached --stat)" ]; then
+    echo ""
+    echo "[$(date +%H:%M:%S)] 没有已跟踪文件的修改，跳过 git commit/push"
+    SKIP_GIT=1
+  else
+    git commit -m "$MSG" || {
+      echo "✗ git commit 失败"
+      exit 1
+    }
+    SKIP_GIT=0
+  fi
 fi
 
 # === 3. git push ===
