@@ -13,7 +13,7 @@
 1. WebSocket 连服务端，`register` 入网
 2. NTP 式时钟同步（算本地↔服务端时间差）
 3. 收 `play`/`seek`/`pause`/`stop`/`setVolume`，在服务端指定的**未来时刻**精确起播 / 暂停
-4. 每 3s 漂移修正（小偏差调速、大偏差 seek）
+4. 每 1.5s 漂移修正（仅在漂移 ≥ 阈值时 seek；不用 playbackRate 微调——那是断音的根因）
 
 **装上即同步**靠的是服务端的「中途加入」逻辑：app `register` 后，服务端立刻把当前播放快照投影成一条 fresh `play` 消息下发（见 §2.4），app 照常处理即可追上进度——app 端不需要任何额外追赶代码。
 
@@ -162,26 +162,22 @@ actualSec   = player.currentPosition / 1000
 expectedSec = (serverNow() - startServerTime)/1000 + trackOffsetMs/1000
 driftMs     = (actualSec - expectedSec) * 1000
 
-|drift| ≥ 200ms → seek 到 expectedSec - 0.1s（回退 100ms 让音频自然追上来），冷却 800ms
-30 ≤ |drift| < 200ms → 微调 playbackRate：drift>0 用 1-0.003（慢一点追平），drift<0 用 1+0.003；1500ms 后回 1.0
-|drift| < 30ms → 不动
+|drift| ≥ SEEK_THRESHOLD_MS（100）→ seek 到 expectedSec - SEEK_BACK_MS/1000（回退 100ms 让音频自然追上对齐点），冷却 SEEK_COOLDOWN_MS（1000ms）
+|drift| < SEEK_THRESHOLD_MS        → 不动（接受小漂移；人耳对 < 80ms 相位差不敏感）
 ```
 
-> **为什么强 seek 要回退 100ms**：直接跳到 `expectedSec` 在多秒级偏差时会有"扑通"声。回退一点让音频自然推进补齐，听感远更平滑。
+> **没有 playbackRate 微调路径** —— 这是 web 端踩过的坑：playbackRate 任何改变都会触发 DAC 重新锁定 LPCM（蓝牙/外置 DAC 上尤其明显），周期性触发就是"咯噔"声（断音）的根因。
 >
-> **为什么速率微调要"长持续低幅"**：`±0.5%` 在蓝牙/外置 DAC 上阶跃有可闻咔嗒声；`±0.3%` + `1500ms` 长持续让速率变化覆盖整个检查周期，听感平滑而非阶跃。
+> ExoPlayer 等价：`setPlaybackParameters(PlaybackParameters(speed))` 会触发底层 audio renderer 重协商，同样会引发短暂静音或噪声。所以安卓端也**不要**用 `setPlaybackParameters` 做小漂移微调，只在漂移 ≥ 100ms 时调 `seekTo(expectedMs - 100)`。
 
 ### 参数
 
 | 常量 | 值 |
 |---|---|
 | `DRIFT_CHECK_MS` | 1500 |
-| `RATE_TWEAK` | 0.003（±0.3%） |
-| `RATE_LIMIT_MS` | 1500（微调持续时间，覆盖整个检查周期） |
-| 强 seek 阈值 | 200ms |
-| 强 seek 回退量 | 100ms（让音频自然追上来） |
-| 微调阈值 | 30ms |
-| seek 冷却 | 800ms |
+| `SEEK_THRESHOLD_MS` | 100（漂移 ≥ 此值才 seek） |
+| `SEEK_BACK_MS` | 100（seek 前回退，让音频自然追） |
+| `SEEK_COOLDOWN_MS` | 1000（seek 后屏蔽漂移检查） |
 
 ---
 
@@ -220,7 +216,7 @@ localVolume   ← app 本机用户拉杆（0-1）
 
 1. **世代计数器**（`_gen`）：快速切歌时，旧源的元数据回调可能晚到，用递增代次让旧回调自废——ExoPlayer 用 `setMediaItem` 返回的 sequence 或自增 token 等价实现：每次新 `play` 自增 token，回调里校验 token 一致才执行起播。
 2. **先注册监听再设源**：web 先 `addEventListener("loadedmetadata")` 再设 `src`，否则 metadata 在注册前到达导致 `begin` 永不执行。ExoPlayer 设 `MediaItem` 前先挂好 `Player.Listener`。
-3. **seek 风暴冷却**：强 seek 后 2s 内屏蔽漂移检查（`_seekCooldownUntil`），否则 seek 未完成时又判定漂移触发二次 seek。
+3. **seek 风暴冷却**：seek 后 1000ms 内屏蔽漂移检查（`_seekCooldownUntil`），否则 seek 未完成时又判定漂移触发二次 seek。
 4. **play() 被拒要如实更新状态**：web autoplay policy 拒绝 `play()` 时把 `isPlaying=false`，避免 UI 显示播放中却无声。安卓无 autoplay 限制，但首次播放在后台/无焦点时可能失败，同样要 catch + 状态回滚。
 5. **setInterval 要 try/catch**：周期任务里异常别变成 unhandled rejection 打断循环。
 
@@ -251,11 +247,9 @@ localVolume   ← app 本机用户拉杆（0-1）
 | `PING_BURST_COUNT` | 5 | 收敛期连发数 | 同上 |
 | `PING_BURST_INTERVAL_MS` | 100 | 收敛期间隔 | 同上 |
 | `DRIFT_CHECK_MS` | 1500 | 漂移检查周期 | 同上 |
-| `RATE_TWEAK` | 0.003 | 微调速率 ±0.3% | 同上 |
-| `RATE_LIMIT_MS` | 1500 | 微调持续时间 | 同上 |
-| `HARD_SEEK_BACK_MS` | 100 | 强 seek 前回退量（自然追） | 同上 |
-| 漂移阈值 | 30 / 200 ms | 微调 / 强 seek 分界 | 同上 |
-| seek 冷却 | 800 ms | 强 seek 后屏蔽漂移 | 同上 |
+| `SEEK_THRESHOLD_MS` | 100 | 漂移 ≥ 此值才 seek（替代旧的 30/200 双阈值） | 同上 |
+| `SEEK_BACK_MS` | 100 | seek 前回退，让音频自然追 | 同上 |
+| `SEEK_COOLDOWN_MS` | 1000 | seek 后屏蔽漂移检查 | 同上 |
 | 重连间隔 | 1500 ms | WS 断线重连 | 同上 |
 | `STALE_MS` | 30000 | 服务端清理僵尸连接（>30s 无帧） | `server/ws.mjs` |
 | `SWEEP_INTERVAL_MS` | 5000 | 服务端扫描间隔 | 同上 |

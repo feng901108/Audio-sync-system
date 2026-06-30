@@ -112,13 +112,13 @@ node --check server/scheduler.mjs
 
 1. 客户端每 2s ping 一次，取最近 10 次 RTT 最小 3 次的 offset 中位数作为时钟差
 2. 服务端 `play` 命令带 `startServerTime = now + 1500ms`（`PRELOAD_MS`），客户端换算到本地时刻精确 `start()`
-3. 每 1.5s 比对实际位置 vs 应播位置：30–200ms 用 ±0.3% 速率追平（持续 1.5s 后回 1），>200ms 回到期望位置前 100ms 让音频自然追（避免"扑通"声）
+3. 每 1.5s 比对实际位置 vs 应播位置：|drift| < 100ms 接受，|drift| ≥ 100ms 回到期望位置前 100ms 让音频自然追。**没有 playbackRate 微调路径** —— playbackRate 改变触发 DAC 重新锁定（LPCM 重协商），蓝牙/外置 DAC 上周期性触发就是"咯噔"声的根因。
 
 **可调旋钮**：
 - `server/scheduler.mjs` `PRELOAD_MS`（默认 1500，慢端可再调高）
 - `web/sync.js` `PING_INTERVAL_MS`（默认 2000，可调到 1000 加快收敛）
 - `web/sync.js` `DRIFT_CHECK_MS`（默认 1500，更小更平滑但 CPU 多）
-- `web/sync.js` 漂移阈值 30/200 ms
+- `web/sync.js` `SEEK_THRESHOLD_MS`（默认 100，漂移超过才 seek）
 
 ## 6. 验证流程
 
