@@ -87,6 +87,12 @@ curl http://localhost:3000/api/health
 node --check server/index.mjs
 node --check server/scheduler.mjs
 # （其它 .mjs 同理）
+
+# Import 完整性校验（**改 export/import 后必跑**——`node --check` 只 parse 不查 export 名字）
+# 例如 ws.mjs 加了 HEARTBEAT_INTERVAL_MS 但忘 export,容器会循环重启且错误信息只在容器日志里
+node -e "import('./server/ws.mjs').then(m => console.log('ws.mjs exports:', Object.keys(m).join(', ')))"
+node -e "import('./server/scheduler.mjs').then(m => console.log('scheduler.mjs exports:', Object.keys(m).join(', ')))"
+# 任何 .mjs 同理：import('./server/xxx.mjs')
 ```
 
 **⚠️ 重要**：web/ 改动必须 rebuild 容器镜像才能生效。光 `docker compose restart` 不会更新前端——`web/` 在 `Dockerfile` 里是 `COPY` 进去的，baked into image。`deploy.sh` 包含 `build --no-cache`，会自动重建。
