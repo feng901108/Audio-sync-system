@@ -53,6 +53,11 @@
 
 // 时钟探测。t0 = 客户端发送时刻（epoch ms）
 { "type": "ping", "t0": 1719000000000 }
+
+// v2：metadata 加载耗时上报。Player.STATE_READY 时算 loadedMs 发一次
+// 服务端按 zone 内最慢 ×2 + 500 自动拉长 startServerTime，避免快设备抢跑
+// 合法范围：0 < loadedMs < 30000
+{ "type": "reportLoaded", "loadedMs": 850 }
 ```
 
 `kind` 自定义（如 `android-tv` / `android-phone`），服务端仅记录用于命名兜底，不影响协议。`zoneId` 是设备要加入的分区；服务端 `ensureDevice` 会尊重它（已存在设备若 `zone_id` 为空才填，否则保留原分区——切分区走 admin `PATCH /api/devices/:id {zoneId}`，见 §9）。
@@ -118,6 +123,19 @@ app 收到后按 §4 正常起播即可，自然落在当前进度上。**无需
 - 之后 **2000ms 一次**正常轮询
 - `serverNow() = localNow() + offset`
 
+### 时钟源（v2 推荐，monotonic 优先）
+
+`System.currentTimeMillis()` 受 NTP 校时、夏令时、用户手动改时间影响——offset 估算会被这些事件污染。最稳妥的方案是**把 monotonic 时钟映射到 epoch**：
+
+```kotlin
+val nowMs = System.currentTimeMillis() - SystemClock.elapsedRealtime()
+                    + (SystemClock.elapsedRealtime() + SystemClock.elapsedRealtimeNanos() / 1_000_000)
+// 等价于：单调时钟快照当前 epoch 基准 → 后者只增不减，offset 不再受外部时间跳变影响
+// web 端等价：performance.timeOrigin + performance.now()
+```
+
+外推起点要在 App 启动时取一次（`SystemClock.elapsedRealtime()` + 当前 `System.currentTimeMillis()`），之后只用 monotonic 时钟 + 基准换算。漂移检查 / setTimeout / 起播时间统一用 monotonic ms。**不要**用 `SystemClock.uptimeMillis()`——它不含休眠，锁屏唤醒后会跳。
+
 ### 参数（复刻用）
 
 | 常量 | 值 | 来源 |
@@ -179,6 +197,20 @@ driftMs     = (actualSec - expectedSec) * 1000
 | `SEEK_BACK_MS` | 100（seek 前回退，让音频自然追） |
 | `SEEK_COOLDOWN_MS` | 1000（seek 后屏蔽漂移检查） |
 
+### 缓冲区健康度（v2 推荐，可选上报）
+
+漂移之外，还要看 **buffered range** 是否足够——缓冲耗尽（buffered.end == currentPosition）是 starve 的早期信号。ExoPlayer 取法：
+
+```kotlin
+override fun onPositionDiscontinuity(...) {}
+// Player.Listener 里周期性查 bufferedPosition
+val bufferedMs = player.bufferedPosition - player.currentPosition  // 等价 web 的 _bufferAheadMs()
+```
+
+建议漂移检查同周期上报 `bufferAheadMs`，送进 status UI；< 1000ms 时打 warning。后台慢设备诊断用。
+
+> 这是 v2 给"加载慢设备自动延长 PRELOAD_MS"打基础——服务端要先知道哪些设备慢（见 §9 `reportLoaded`）。app 不需要做"根据自己 bufferAhead 决定是否延后 play"的逻辑：服务端已经按 zone 内最慢设备统一预留时间。
+
 ---
 
 ## 6. 音频流式播放
@@ -189,6 +221,12 @@ driftMs     = (actualSec - expectedSec) * 1000
 - 时钟基准用 ExoPlayer `currentPosition`（ms），等价 web 的 `audio.currentTime * 1000`
 - `preload` 只取头部元数据（web 用 `preload="metadata"`），ExoPlayer 默认不预载全量
 - 同源部署不需要 CORS；若走反代跨域，`/audio` 要放行 Range 头
+
+**HTTP 缓存（服务端已配置）**：
+- `Cache-Control: public, max-age=31536000, immutable`（曲目文件 id 不可变）
+- `ETag: W/"<mtime>-<size>"` + 客户端 `If-None-Match` → 304 不传 body
+- 非标 Range（iOS Safari 偶发 `start > total`）服务端降级 200 全发 + `X-Range-Fallback: 1`，不返 416
+- ExoPlayer 默认遵循 ETag 和 Range，无需额外配置；如用 OkHttp 直连参考服务端 `Cache-Control` 即可
 
 ### `onended` 自然播完
 
@@ -210,6 +248,32 @@ localVolume   ← app 本机用户拉杆（0-1）
 - 安卓：`ExoPlayer.setVolume(master * local)` 一处搞定；或 `AudioManager` 管 STREAM_MUSIC（local）+ ExoPlayer volume（master）——推荐前者，简单且两层语义清晰
 - admin 调某设备音量只影响该设备（服务端 `sendTo(deviceId, setVolume)` 单播），其它设备不动
 
+### 音量 ramp（v2 推荐，避免"咔"声）
+
+`setVolume` 直接阶跃会被蓝牙 / 外置 DAC 放大成可闻"咔"声。web 端用 Web Audio 的 `linearRampToValueAtTime(target, currentTime + 0.1)` 平滑 100ms，安卓推荐用 `ValueAnimator` 或自写 Handler 每 10ms 步进：
+
+```kotlin
+private var rampStartVolume = 1f
+private var rampEndVolume = 1f
+private var rampStartMs = 0L
+private fun startVolumeRamp(from: Float, to: Float, durationMs: Long = 100) {
+    rampStartVolume = from; rampEndVolume = to; rampStartMs = SystemClock.elapsedRealtime()
+    handler.post(VolumeStep)
+}
+private val VolumeStep = object : Runnable {
+    override fun run() {
+        val now = SystemClock.elapsedRealtime()
+        val t = (now - rampStartMs).toFloat() / 100f
+        if (t >= 1f) { player.volume = rampEndVolume; return }
+        player.volume = rampStartVolume + (rampEndVolume - rampStartVolume) * t
+        handler.postDelayed(this, 10)
+    }
+}
+// 调用：startVolumeRamp(currentVol, master * local)
+```
+
+每次音量变更（master 或 local）先 `cancel` 上一次 ramp，从当前值 ramp 到目标 100ms。同 ExoPlayer `setPlaybackParameters` 一样，**不要**用 `AudioManager.adjustStreamVolume`——那是系统事件，广播很重，第三方 app 改不动。
+
 ---
 
 ## 8. 竞态处理（web 已踩的坑，app 直接避）
@@ -219,6 +283,42 @@ localVolume   ← app 本机用户拉杆（0-1）
 3. **seek 风暴冷却**：seek 后 1000ms 内屏蔽漂移检查（`_seekCooldownUntil`），否则 seek 未完成时又判定漂移触发二次 seek。
 4. **play() 被拒要如实更新状态**：web autoplay policy 拒绝 `play()` 时把 `isPlaying=false`，避免 UI 显示播放中却无声。安卓无 autoplay 限制，但首次播放在后台/无焦点时可能失败，同样要 catch + 状态回滚。
 5. **setInterval 要 try/catch**：周期任务里异常别变成 unhandled rejection 打断循环。
+
+### 网络瞬断自动恢复（v2 推荐）
+
+WiFi 抖、HTTP Range 抓一半、文件被服务端删——任何让 ExoPlayer 报错 `ExoPlaybackException` 的场景，**不要直接 isPlaying=false**。web 端的做法：
+
+```js
+audio.onerror = () => {
+  if (!currentTrackUrl) return;
+  const trackId = currentTrackId, offsetSec = trackOffsetMs / 1000;
+  setTimeout(() => {
+    if (currentTrackId !== trackId) return;          // 已切歌则放弃
+    audio.src = url; audio.load();
+    audio.currentTime = offsetSec;                   // 回到出错时的偏移
+    if (isPlaying) audio.play().catch(() => {});
+  }, 1000);                                            // 给网络一秒恢复
+};
+```
+
+安卓等价：
+
+```kotlin
+override fun onPlayerError(error: PlaybackException) {
+    val token = currentGen
+    val offsetMs = player.currentPosition
+    val url = currentTrackUrl
+    handler.postDelayed({
+        if (token != currentGen) return@postDelayed    // 期间已切歌
+        player.setMediaItem(MediaItem.fromUri(url))
+        player.prepare()
+        player.seekTo(offsetMs)                        // 回到出错时的偏移，不是 0
+        if (isPlayingExpected) player.play()
+    }, 1000)
+}
+```
+
+关键：重试时保留当前偏移（不是 seekTo(0)），且对当前世代做校验避免覆盖新 play。**不要**无限重试——3 次失败后把状态回滚到 isPlaying=false 并提示用户检查网络。
 
 ---
 
@@ -236,13 +336,51 @@ localVolume   ← app 本机用户拉杆（0-1）
 | **切分区** | app 不主动切；admin 调 `PATCH /api/devices/:id {zoneId}`，服务端 `hub.setDeviceZone` 改设备所属 zone，之后只收新 zone 广播 |
 | **TV vs 手机** | 协议层完全一致，仅 UI 不同：TV 用 Leanback + D-Pad，手机可加本机音量拉杆 / 设备名输入 |
 
+### 上报 metadata 加载耗时（v2 推荐，让服务端自动适配慢设备）
+
+不同设备 / 网络条件下"metadata 解码 + 第一帧可用"的耗时差异很大（手机 100ms、TV 慢网络 3-5s 都有可能）。服务端用固定 `PRELOAD_MS = 1500ms` 会在慢设备上漏出 buffer → 还没准备好就要 start → 实际起播晚 1-3s。
+
+**协议**：app 在自己起播 `play` 时记录 `srcSetAtMs`，收到 `Player.Listener.onPlaybackStateChange(STATE_READY)` 时算差值，通过 ws 上报：
+
+```kotlin
+private var srcSetAtMs = 0L
+private var reportedForGen = 0  // 同一 play 只上报一次
+
+// setMediaItem 时
+srcSetAtMs = monotonicNow()
+
+// 监听里
+override fun onPlaybackStateChange(state: Int) {
+    if (state == Player.STATE_READY && reportedForGen != currentGen) {
+        val loadedMs = monotonicNow() - srcSetAtMs
+        ws.send("""{"type":"reportLoaded","loadedMs":$loadedMs}""")
+        reportedForGen = currentGen
+    }
+}
+```
+
+服务端 `recordLoadedMs(deviceId, ms)` 缓存到 `Map`，`scheduler.play()` 调 `getEffectivePreloadMs(zoneId)` 按 **zone 内最慢设备 × 2 + 500ms** 自动拉长。app 不需要做"我比对方慢，等一下再 play"的复杂逻辑——服务端会替 zone 内所有设备选一个够大的 `startServerTime`，所有设备在同一时刻起播即可。
+
+> 边界：合法范围 `0 < ms < 30000`，服务端会校验；同一设备的 `reportLoaded` 每次 play 覆盖更新。
+
+### 协议层心跳（v2 推荐，避免半开连接）
+
+仅靠应用层 `ping {t0}` / `pong {t0,t1}` 无法识别"客户端实际断了但 TCP 没 RST"的半开状态（VPN/路由器/4G 切换很常见）。服务端 10s 发一次 WS 协议层 ping frame（opcode 0x9），app 用 OkHttp / Scarlet 自带的 WS 库通常自动回 pong（opcode 0xa）。
+
+**注意**：协议层心跳和应用层 ping（时钟同步）**不要**混用——它们语义不同：
+- 协议层 ping = 探测 TCP 是否活着，**不带业务数据**
+- 应用层 ping = 算 offset / RTT，**不能**作心跳用
+
+OkHttp 4.x 起 `pingInterval` 可设（如 `OkHttpClient.Builder().pingInterval(10, TimeUnit.SECONDS)`），但 server-driven 心跳和 client-driven 心跳只能选一个。建议 server-driven（服务端 `hub.pingAll()` 每 10s），client 只被动回 pong。**不要**在应用层额外发心跳消息污染 `ping {t0}` 的时序样本。
+
 ---
 
 ## 10. 关键参数总表（复刻速查）
 
 | 参数 | 值 | 用途 | 来源 |
 |---|---|---|---|
-| `PRELOAD_MS` | 1500 | 服务端 `startServerTime = now + 1500`，客户端起播延迟预算 | `server/scheduler.mjs` |
+| `PRELOAD_MS`（基础） | 1500 | 服务端 `startServerTime = now + 1500`，客户端起播延迟预算 | `server/scheduler.mjs` |
+| `effectivePreloadMs` | `getEffectivePreloadMs(zoneId)` | v2：按 zone 内最慢设备 loadedMs × 2 + 500 动态拉长 | `server/scheduler.mjs` |
 | `PING_INTERVAL_MS` | 2000 | 时钟同步轮询 | `web/sync.js` |
 | `PING_BURST_COUNT` | 5 | 收敛期连发数 | 同上 |
 | `PING_BURST_INTERVAL_MS` | 100 | 收敛期间隔 | 同上 |
@@ -253,6 +391,12 @@ localVolume   ← app 本机用户拉杆（0-1）
 | 重连间隔 | 1500 ms | WS 断线重连 | 同上 |
 | `STALE_MS` | 30000 | 服务端清理僵尸连接（>30s 无帧） | `server/ws.mjs` |
 | `SWEEP_INTERVAL_MS` | 5000 | 服务端扫描间隔 | 同上 |
+| `HEARTBEAT_INTERVAL_MS` | 10000 | v2：服务端协议层 ping 间隔（早发现半开） | 同上 |
+| `HEARTBEAT_GRACE_MS` | 12000 | v2：客户端相邻心跳最大间隔（超此值视作服务端异常） | `web/sync.js` |
+| volume ramp duration | 100 ms | v2：音量变更 100ms 平滑（避免蓝牙/外置 DAC 阶跃咔声） | 同上 |
+| onerror retry delay | 1000 ms | v2：播放器报错后 1s 重试当前 offset | 同上 |
+| `reportLoaded` 上报 | 一次性 / play | v2：metadata 就绪时上报 loadedMs（`0 < ms < 30000`） | `server/ws.mjs` |
+| 缓冲健康度上报 | 周期 / DRIFT_CHECK_MS | v2 可选：`bufferedPosition - currentPosition` 用于诊断慢设备 | `web/sync.js` |
 
 同步目标：多端相位差 **< 80ms**。
 
@@ -270,6 +414,12 @@ localVolume   ← app 本机用户拉杆（0-1）
 - [ ] 锁屏 5s → 前台服务维持播放不断；切分区 → app 收新 zone 广播
 - [ ] ≥ 5 分钟曲目，结尾各端漂移仍 < 80ms
 - [ ] 客户端断 WiFi 5s 再连 → 自动重连并追到当前进度
+- [ ] **v2**：用 monotonic clock + epoch 基准（NTP / 手动改时间后 offset 不跳变）
+- [ ] **v2**：服务端 `reportLoaded` 上报正常；二次 play 时 `effectivePreloadMs` 不再卡在 1500ms
+- [ ] **v2**：慢设备（如 TV）首播到齐后，下一首在加载慢设备的同时快设备不抢跑（`startServerTime` 拉长到足够）
+- [ ] **v2**：admin 滑动音量条，app 端用 100ms ramp 平滑过渡，**无"咔"声**
+- [ ] **v2**：播放中拔网线 1s 重插，app 报错后 1s 自动重试并接回原偏移（不 seekTo(0)）
+- [ ] **v2**：后台 30s 服务端不判 app 离线（协议层 ping 10s 间隔工作）
 
 ---
 

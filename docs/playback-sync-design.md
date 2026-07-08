@@ -159,7 +159,9 @@ gain.connect(ctx.destination);                    // 输出
 // 浏览器自动按需 Range 拉数据,边下边播,内存峰值 < 10MB
 ```
 
-**服务端配合**: `serveStatic` 检测到 `Range` 头则返 206 Partial Content + `Content-Range`,否则返 200 全量。
+**服务端配合**: `serveStatic` 检测到 `Range` 头则返 206 Partial Content + `Content-Range`,否则返 200 全量。iOS Safari 偶发发 `start > total` 的非法 Range,服务端不返 416 而是降级 200 全发(响应头 `X-Range-Fallback: 1`),避免客户端重试整个文件把磁盘缓存击穿。
+
+**HTTP 强缓存(已实现)**: `/audio/*` 走 `Cache-Control: public, max-age=31536000, immutable` + ETag(`W/"<mtime>-<size>"`),二次播放命中走 304 不传 body。前端 HTML/JS/CSS 仍 `no-store`(走 docker rebuild 拉新,避免污染)。
 
 ### 2.6 两层音量
 
@@ -227,6 +229,11 @@ mode = "loop-all"    → 队头 + 当前曲移到队尾
 | `SEEK_COOLDOWN_MS` | 1000 | 同上 | seek 后屏蔽漂移检查 |
 | `STALE_MS` | 30000 | `server/ws.mjs` | 清理僵尸连接(>30s 无帧) |
 | `SWEEP_INTERVAL_MS` | 5000 | 同上 | 服务端扫描间隔 |
+| `HEARTBEAT_INTERVAL_MS` | 10000 | 同上 | v2:协议层 WS ping 间隔(早发现半开连接) |
+| `HEARTBEAT_GRACE_MS` | 12000 | 同上 | v2:客户端相邻心跳最大间隔(超此值视作服务端异常) |
+| `effectivePreloadMs` | 动态 | `server/scheduler.mjs` | v2:按 zone 内最慢设备 loadedMs ×2 + 500 动态拉长 |
+| volume ramp duration | 100ms | `web/sync.js` | v2:音量变更平滑过渡(避免蓝牙/外置 DAC 阶跃咔声) |
+| onerror retry delay | 1000ms | 同上 | v2:播放器报错后 1s 重试当前 offset(不是 seekTo(0)) |
 
 ---
 
@@ -321,6 +328,38 @@ scheduler.next(zoneId)
 
 **解决**: 改用 `<audio>` + `createMediaElementSource` + `preload="metadata"`。浏览器按需 Range 拉数据,内存峰值 < 10MB。
 
+### 5.6 音量阶跃的"咔"声(v2 修复)
+
+**症状**: admin 拖音量条,蓝牙音箱 / 外置 DAC 上听到一次"咔"的爆音。
+
+**排查**: `setVolume` 直接阶跃会被蓝牙接收端放大成可闻爆音,跟 DAC 重锁(LPCM 重协商)同源机制。
+
+**解决**: web 端用 Web Audio `gain.linearRampToValueAtTime(target, currentTime + 0.1)` 平滑 100ms;安卓端 `ValueAnimator` 或自写 Handler 每 10ms 步进。每次音量变更 cancel 上一次 ramp,从当前值 ramp 到目标。
+
+### 5.7 播放中网络抖动卡死(v2 修复)
+
+**症状**: 播放中拔网线 1s 再插,客户端无声也不恢复,得手动点下一首。
+
+**排查**: ExoPlayer / `<audio>` 报错后没有自动恢复路径。
+
+**解决**: 监听 `onPlayerError` / `audio.onerror`,1s 后重试同一 `src` + `seekTo(currentOffset)` + `play()`,3 次失败回滚 `isPlaying=false`。重试时保留当前偏移(不是 0),且对 `_gen` 做校验避免覆盖更新的 play。
+
+### 5.8 NTP 校时 / 手动改时间污染 offset(v2 修复)
+
+**症状**: 安卓 NTP 校时后,客户端的本地-服务端 offset 跳变几百 ms,几秒内相位差劣化到 200ms+。
+
+**排查**: `System.currentTimeMillis()` 受 NTP 校时、夏令时、用户手动改时间影响——offset 估算会被这些事件污染。
+
+**解决**: monotonic 时钟 + epoch 基准映射。`nowMs = System.currentTimeMillis() - SystemClock.elapsedRealtime() + (SystemClock.elapsedRealtime() + SystemClock.elapsedRealtimeNanos()/1_000_000)`,等价 web 端 `performance.timeOrigin + performance.now()`。基准在 App 启动时取一次,之后只用 monotonic + 基准换算,offset 不再受外部时间跳变影响。
+
+### 5.9 客户端"半开连接"(v2 修复)
+
+**症状**: VPN/路由器/4G 切换时,客户端实际断了但 TCP 没 RST,服务端 30s 内不判离线;30s 后才察觉,但 UI 上一直显示"已连接"。
+
+**排查**: 应用层 `ping {t0}` / `pong {t0,t1}` 无法识别"TCP 半开"——应用层 ping 也依赖同一个 socket 读写,断了就一起发不出去。
+
+**解决**: 协议层 WS ping frame(opcode 0x9)由服务端 `hub.pingAll()` 每 10s 发一次,客户端用 OkHttp/Scarlet 自带 WS 库自动回 pong。`pingInterval` 和应用层 ping 是两件事,前者探测 TCP 活着,后者算 offset/RTT,语义不重叠。
+
 ---
 
 ## 6. 当前局限 / 待优化
@@ -328,6 +367,7 @@ scheduler.next(zoneId)
 ### 6.1 iOS Safari 后台限制
 
 - **现象**: iPhone Safari 切后台或锁屏后,`AudioContext` 暂停,音频停播
+- **v2 缓解**: 前端 `ctx.onstatechange` 实时追踪状态,UI 诊断面板可见当前状态;首次访问需用户点击解锁(`playsinline` + `webkit-playsinline` 避免切全屏)
 - **解决方向**: 提示用户保持页面前台;长期方案是 Android 原生客户端(Foreground Service)
 - **临时绕过**: 暂不支持 PWA 后台播放(Web App 限制)
 
@@ -362,12 +402,15 @@ scheduler.next(zoneId)
 
 | 优先级 | 项目 | 备注 |
 |---|---|---|
-| P1 | Android 原生客户端(Kotlin + ExoPlayer + Foreground Service) | 移植指南 `docs/android-port-guide.md` 已就绪 |
+| P2 | Android 原生客户端(Kotlin + ExoPlayer + Foreground Service) | 移植指南 `docs/android-port-guide.md` 已就绪,含 v2 优化(monotonic / reportLoaded / heartbeat / volume ramp / onerror retry) |
 | P2 | 定时广播 / BGM 调度(cron 风格) | admin 加定时规则,服务端 cron 触发 play |
 | P3 | mDNS 自动发现服务端 | 客户端无需手填 IP |
-| P3 | HTTPS + 签名 URL | 解决安全 + iOS autoplay |
+| P3 | HTTPS 终结 TLS | 当前 HTTP 部署仍可用;v2 解锁横幅绕过了 iOS autoplay,但 PWA install / Service Worker 仍需 HTTPS |
+| P3 | 签名 URL | 解决 `/audio/*` 文件级鉴权缺失(见 §6.3) |
 | P4 | 多人协作(多 admin 同时控制) | 当前 scheduler 无并发保护,简单锁即可 |
 | P4 | 歌词同步(LRC 解析) | 客户端 UI 加歌词显示 |
+
+> 已完成(从 v2 移除):协议层心跳(§5.9)、volume ramp(§5.6)、onerror retry(§5.7)、monotonic clock(§5.8)、`reportLoaded` 慢设备自适应、iOS 解锁 + 诊断面板(§9)、HTTP 强缓存 + Range 容错(§2.5)
 
 ---
 
@@ -375,10 +418,31 @@ scheduler.next(zoneId)
 
 | 关注点 | 看哪个文件 | 关键段 |
 |---|---|---|
-| 客户端全套参考实现 | `web/sync.js` | `SyncClient`(_handle / _startTrack / _drift) |
-| 服务端 WS 协议 + 中途加入投影 | `server/ws.mjs` | `handleUpgrade` |
-| 播放状态机 + 模式 + 调度 advance | `server/scheduler.mjs` | `play` / `pause` / `resume` / `stop` / `seek` / `next` / `prev` / `snapshot` / `scheduleAdvance` |
-| 音频流 + Range | `server/index.mjs` | `serveStatic` |
+| 客户端全套参考实现 | `web/sync.js` | `SyncClient`(_handle / _startTrack / _drift / volume ramp / onerror retry / iOS unlock) |
+| 服务端 WS 协议 + 中途加入投影 | `server/ws.mjs` | `handleUpgrade` / `hub.pingAll` / `recordLoadedMs` |
+| 播放状态机 + 模式 + 调度 advance | `server/scheduler.mjs` | `play` / `getEffectivePreloadMs` / `scheduleAdvance` |
+| 音频流 + Range + 缓存 | `server/index.mjs` | `serveStatic`(206 / ETag / immutable / Range 容错) |
 | WS Hub + Zone 隔离 | `server/ws.mjs` | `Hub` 类 |
+| iOS 诊断 UI | `web/index.html` | `.diag` / `.ios-banner` / 解锁按钮 |
 | 安卓移植步骤 | `docs/android-port-guide.md` | 全篇 |
 | REST API + 命令速查 | `README.md` / `CLAUDE.md` | 路由清单 + 模块速查 |
+
+---
+
+## 9. iOS Safari 兼容性(客户端硬骨头)
+
+iOS Safari 对 Web 音频有几条硬性限制,前端做了针对性处理(2026-Q2 v2):
+
+| 限制 | 应对 |
+|---|---|
+| HTMLAudioElement 主线程 decode | 沿用 `<audio>` + `createMediaElementSource`,不切 `AudioBufferSourceNode`(避免大文件 OOM) |
+| autoplay policy 必须用户手势 | 创建 AudioContext 后挂 `click` / `touchstart` / `keydown` 监听器,首次手势 `ctx.resume()`;拒绝时 `needsUserGesture=true`,UI 显式横幅 + "解锁"按钮 |
+| 进入后台 AudioContext suspend | `ctx.onstatechange` 实时追踪,UI 诊断面板可见当前状态(`running` / `suspended` / `closed`) |
+| `<audio>` 偶发切全屏 | 显式设 `playsinline` + `webkit-playsinline` |
+| MediaError 码分错重试策略 | 1=中止(主动切歌,放弃)/ 2=网络(1s 重试)/ 3=解码(1s 重试)/ 4=不支持(放弃,提示用户) |
+| 非标 Range 重下整个文件 | 服务端降级 200 全发 + `X-Range-Fallback: 1`(见 §2.5) |
+| 二次播放仍重下文件 | `Cache-Control: immutable` + ETag/304(见 §2.5) |
+
+诊断面板(`/index.html` 右下"诊断"折叠)实时显示五项:`AudioContext` 状态 / 缓冲 ahead(`X.Xs` 或 `0(缓冲耗尽)`)/ seek 次数 / MediaError 码 / 设备类型。卡顿时第一眼看到根因,不用猜。
+
+> 这些是 Web App 的硬限制;真要做后台保活 / 锁屏播放只能走原生客户端(见 §7 P2 Android)。
