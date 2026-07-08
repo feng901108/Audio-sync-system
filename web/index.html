@@ -88,6 +88,23 @@
         <span class="status-dot" id="conn-dot"></span>
         <span id="conn-status">连接中…</span>
       </div>
+
+      <!-- iOS / 调试用：状态可见 + 必要时一键解锁 AudioContext -->
+      <div id="ios-banner" class="ios-banner" hidden>
+        <span id="ios-banner-text">iOS 需要点击以解锁音频</span>
+        <button id="ios-unlock-btn" class="btn btn-primary" style="height:36px;font-size:13px;padding:0 14px;">解锁</button>
+      </div>
+
+      <details class="diag">
+        <summary>诊断</summary>
+        <div class="diag-grid">
+          <div class="meta-item"><span class="meta-label">AudioContext</span><span class="meta-value muted" id="diag-ctx">—</span></div>
+          <div class="meta-item"><span class="meta-label">缓冲</span><span class="meta-value muted" id="diag-buffer">—</span></div>
+          <div class="meta-item"><span class="meta-label">seek 次数</span><span class="meta-value muted" id="diag-seeks">0</span></div>
+          <div class="meta-item"><span class="meta-label">MediaError</span><span class="meta-value muted" id="diag-err">0</span></div>
+          <div class="meta-item" style="grid-column:span 2;"><span class="meta-label">设备</span><span class="meta-value muted" id="diag-device">—</span></div>
+        </div>
+      </details>
     </section>
 
   </main>
@@ -179,6 +196,36 @@ $("join-btn").addEventListener("click", async () => {
     const ok = s.connected;
     $("conn-status").textContent = ok ? "已连接" : "已断开，正在重连…";
     $("conn-dot").className = "status-dot " + (ok ? "ok" : "warn");
+    // 诊断面板
+    $("diag-ctx").textContent = s.audioContextState ?? "—";
+    $("diag-buffer").textContent = s.bufferAheadMs > 0 ? `${(s.bufferAheadMs / 1000).toFixed(1)}s` : "0（缓冲耗尽）";
+    $("diag-buffer").classList.toggle("muted", s.bufferAheadMs >= 1000);
+    $("diag-seeks").textContent = String(s.seekCount ?? 0);
+    $("diag-err").textContent = `${s.mediaErrorCode ?? 0}${s.mediaErrorCode ? "（1=中止 2=网络 3=解码 4=不支持）" : ""}`;
+    $("diag-err").classList.toggle("muted", !s.mediaErrorCode);
+    // UA 浏览器识别：Chrome UA 同时含 Chrome/ + Safari/，要按 Edg→OPR→Firefox→Chrome→Safari 顺序剔除
+    let uaBrowser = "Web";
+    if (s.isIos) uaBrowser = "iOS Safari";
+    else if (/Edg\//.test(navigator.userAgent)) uaBrowser = "Edge";
+    else if (/OPR\//.test(navigator.userAgent)) uaBrowser = "Opera";
+    else if (/Firefox\//.test(navigator.userAgent)) uaBrowser = "Firefox";
+    else if (/Chrome\//.test(navigator.userAgent)) uaBrowser = "Chrome";
+    else if (/Safari\//.test(navigator.userAgent)) uaBrowser = "Safari";
+    $("diag-device").textContent = uaBrowser;
+    // iOS 解锁提示
+    const showBanner = s.needsUserGesture || (s.isIos && s.audioContextState === "suspended");
+    $("ios-banner").hidden = !showBanner;
+    $("ios-banner-text").textContent = s.needsUserGesture
+      ? "iOS 需要点击以解锁音频"
+      : `AudioContext: ${s.audioContextState}（点击解锁）`;
+  });
+  $("ios-unlock-btn").addEventListener("click", async () => {
+    if (client.ctx && client.ctx.state === "suspended") {
+      await client.ctx.resume();
+    }
+    // 已 paused 时尝试 play 一下；显式清掉 needsUserGesture 让横幅立刻消失（不等下一次 _update）
+    try { await client.audio?.play(); } catch {}
+    client._update({ needsUserGesture: false, audioContextState: client.ctx?.state ?? "—", isPlaying: !!client.isPlaying });
   });
   if ("wakeLock" in navigator) { try { await navigator.wakeLock.request("screen"); } catch {} }
 });

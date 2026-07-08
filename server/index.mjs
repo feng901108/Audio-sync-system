@@ -4,9 +4,9 @@ import { resolve, extname, dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { db } from "./db.mjs";
 import { findAdminByUsername, verifyPassword, createSession, getSession, destroySession, adminCount } from "./auth.mjs";
-import { handleUpgrade, hub, STALE_MS, SWEEP_INTERVAL_MS } from "./ws.mjs";
+import { handleUpgrade, hub, STALE_MS, SWEEP_INTERVAL_MS, HEARTBEAT_INTERVAL_MS } from "./ws.mjs";
 import {
-  setHub, snapshot, play, pause, resume, stop, seek, next,
+  setHub, snapshot, play, pause, resume, stop, seek, next, prev,
   enqueue, clearQueue, setQueue, setMode,
   listZones, getZone, createZone, renameZone, deleteZone, assignDeviceZone,
   listPlaylists, getPlaylist, createPlaylist, renamePlaylist, deletePlaylist,
@@ -123,23 +123,60 @@ function serveStatic(req, res, filePath) {
   const ext = extname(filePath).toLowerCase();
   const range = req.headers["range"];
   const total = stat.size;
-  const headers = {
+  // 资源名决定缓存策略：/audio/* 是曲目文件（id 形式，不可变）→ 强缓存 1 年；
+  // HTML/JS/CSS 等前端资源继续 no-store（前端走 docker rebuild 拉新，避免 cache 污染）
+  const isAudio = ext === ".mp3" || ext === ".m4a" || ext === ".aac"
+                  || ext === ".ogg" || ext === ".wav" || ext === ".flac";
+  const baseHeaders = isAudio ? {
     "Content-Type": MIME[ext] ?? "application/octet-stream",
     "Accept-Ranges": "bytes",
-    "Cache-Control": "no-cache",
+    "Cache-Control": "public, max-age=31536000, immutable",
+  } : {
+    "Content-Type": MIME[ext] ?? "application/octet-stream",
+    "Cache-Control": "no-store, no-cache, must-revalidate",
   };
+
+  // ETag：mtime + size 弱校验。iOS 二次播同一首歌发 If-None-Match → 304 不传 body，省流量
+  const etag = `W/"${stat.mtimeMs.toString(36)}-${total.toString(36)}"`;
+  const ifNoneMatch = req.headers["if-none-match"];
+  if (isAudio && ifNoneMatch === etag) {
+    res.writeHead(304, { ...baseHeaders, ETag: etag });
+    res.end();
+    return;
+  }
+
+  const headers = { ...baseHeaders, ETag: etag };
   if (range) {
     const m = /bytes=(\d*)-(\d*)/.exec(range);
     if (m) {
-      const start = m[1] ? Number(m[1]) : 0;
-      const end = m[2] ? Number(m[2]) : total - 1;
-      if (start >= 0 && end < total && start <= end) {
+      // RFC 7233: bytes=-N 表示"最后 N 字节"，bytes=N- 表示"从 N 到末尾"
+      let start, end;
+      if (m[1] === "" && m[2] !== "") {
+        // bytes=-N：取最后 N 字节
+        const suffixLen = Number(m[2]);
+        if (Number.isFinite(suffixLen) && suffixLen > 0 && suffixLen <= total) {
+          start = total - suffixLen;
+          end = total - 1;
+        }
+      } else if (m[1] !== "" && m[2] === "") {
+        // bytes=N-：从 N 到末尾
+        start = Number(m[1]);
+        end = total - 1;
+      } else {
+        start = Number(m[1]);
+        end = Number(m[2]);
+      }
+      // 宽容：iOS Safari 有时发 start > end / start >= total 的 Range，按 200 全发更稳
+      // 而非 416 拒绝（拒绝会让客户端重试整个文件）
+      if (Number.isFinite(start) && Number.isFinite(end) && start >= 0 && start < total && start <= end) {
         headers["Content-Range"] = `bytes ${start}-${end}/${total}`;
         headers["Content-Length"] = end - start + 1;
         res.writeHead(206, headers);
         createReadStream(filePath, { start, end }).pipe(res);
         return;
       }
+      // Range 不合法：降级 200 全发，并在响应头 X-Range-Fallback 标记
+      headers["X-Range-Fallback"] = "1";
     }
   }
   headers["Content-Length"] = total;
@@ -195,7 +232,7 @@ route("POST", "/api/tracks", async (req, res) => {
   const boundary = m[1] ?? m[2];
   let parts;
   try {
-    parts = await parseMultipart(req, boundary, 200 * 1024 * 1024);
+    parts = await parseMultipart(req, boundary, 1024 * 1024 * 1024);
   } catch (e) {
     return sendJson(res, 400, { error: String(e?.message ?? e) });
   }
@@ -336,6 +373,7 @@ route("POST", "/api/playback/pause", async (_req, res) => respondResult(res, pau
 route("POST", "/api/playback/resume", async (_req, res) => respondResult(res, resume(1)), { requireAuth: true });
 route("POST", "/api/playback/stop", async (_req, res) => respondResult(res, stop(1)), { requireAuth: true });
 route("POST", "/api/playback/next", async (_req, res) => respondResult(res, next(1)), { requireAuth: true });
+route("POST", "/api/playback/prev", async (_req, res) => respondResult(res, prev(1)), { requireAuth: true });
 route("POST", "/api/playback/seek", async (req, res) => {
   const { offsetMs } = await readJson(req);
   respondResult(res, seek(1, Number(offsetMs ?? 0)));
@@ -429,6 +467,12 @@ route("POST", "/api/zones/:zoneId/playback/next", async (_req, res, params) => {
   if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
   if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
   respondResult(res, next(zid));
+}, { requireAuth: true });
+route("POST", "/api/zones/:zoneId/playback/prev", async (_req, res, params) => {
+  const zid = parseZoneId(params);
+  if (!zid) return sendJson(res, 400, { error: "非法 zoneId" });
+  if (!getZone(zid)) return sendJson(res, 404, { error: "分区不存在" });
+  respondResult(res, prev(zid));
 }, { requireAuth: true });
 route("POST", "/api/zones/:zoneId/playback/seek", async (req, res, params) => {
   const zid = parseZoneId(params);
@@ -578,4 +622,8 @@ server.listen(PORT, HOST, () => {
     const n = hub.sweep(STALE_MS);
     if (n > 0) console.log(`[sweep] 清理 ${n} 个僵尸连接（>${STALE_MS}ms 未活动）`);
   }, SWEEP_INTERVAL_MS).unref();
+  // 协议层心跳：每 10s 发 ping frame，比 sweep（30s 阈值）早发现半开连接
+  setInterval(() => {
+    hub.pingAll();
+  }, HEARTBEAT_INTERVAL_MS).unref();
 });

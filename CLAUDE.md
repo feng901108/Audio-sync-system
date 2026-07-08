@@ -1,5 +1,7 @@
 # 聚光广播 (Juguang) · 项目规范
 
+> **状态：🟡 暂停** | 最后更新：2026-06-30 | 功能完整，待现场部署验证
+
 > 园区多设备音频同步广播系统。一处选歌，多端 < 80ms 内同步播放。
 > 服务端零依赖（Node.js ≥ 22.5 内置 `node:sqlite`），前端零构建。
 
@@ -26,6 +28,7 @@ juguang/
 │  ├─ sync.js     # 同步客户端核心
 │  └─ styles.css  # 设计系统
 ├─ scripts/       # 本机 → NAS 部署脚本
+├─ docs/          # 衍生文档（客户端移植指南等，非运行时必需）
 ├─ data/          # 运行时（gitignore）
 │  ├─ audio/      # 上传的音频（gitignore）
 │  └─ app.db      # SQLite（gitignore）
@@ -68,8 +71,8 @@ juguang/
 node server/init-admin.mjs admin yourpassword
 
 # 本机开发
-npm start                # 生产方式
-npm run dev              # --watch 热重启
+npm start                # 生产方式（本机长开推荐，避开 --watch 被 OneDrive 同步触发）
+npm run dev              # --watch 热重启（项目在 OneDrive 下，同步会频繁重启，仅短测用）
 
 # 本机 → NAS 一键部署（commit + push + WebDAV 同步）
 npm run deploy -- "feat: 改动说明"
@@ -86,6 +89,12 @@ curl http://localhost:3000/api/health
 node --check server/index.mjs
 node --check server/scheduler.mjs
 # （其它 .mjs 同理）
+
+# Import 完整性校验（**改 export/import 后必跑**——`node --check` 只 parse 不查 export 名字）
+# 例如 ws.mjs 加了 HEARTBEAT_INTERVAL_MS 但忘 export,容器会循环重启且错误信息只在容器日志里
+node -e "import('./server/ws.mjs').then(m => console.log('ws.mjs exports:', Object.keys(m).join(', ')))"
+node -e "import('./server/scheduler.mjs').then(m => console.log('scheduler.mjs exports:', Object.keys(m).join(', ')))"
+# 任何 .mjs 同理：import('./server/xxx.mjs')
 ```
 
 **⚠️ 重要**：web/ 改动必须 rebuild 容器镜像才能生效。光 `docker compose restart` 不会更新前端——`web/` 在 `Dockerfile` 里是 `COPY` 进去的，baked into image。`deploy.sh` 包含 `build --no-cache`，会自动重建。
@@ -96,27 +105,34 @@ node --check server/scheduler.mjs
 
 | 文件 | 职责 |
 |---|---|
-| `server/index.mjs` | HTTP 路由 + 静态托管 + WebSocket upgrade |
-| `server/scheduler.mjs` | 播放状态机：play/pause/resume/stop/seek/next/queue、zone CRUD、playlist CRUD |
-| `server/ws.mjs` | 自实现 WebSocket + Hub（多设备、zone-scoped 广播、僵尸清理） |
+| `server/index.mjs` | HTTP 路由 + 静态托管（按扩展名分支：`/audio/*` 强缓存 + ETag/304，HTML/JS/CSS 仍 no-store）+ Range 容错 + WebSocket upgrade |
+| `server/scheduler.mjs` | 播放状态机：play/pause/resume/stop/seek/next/prev/queue、mode（sequential/loop-one/shuffle/loop-all）、zone CRUD、playlist CRUD、`getEffectivePreloadMs` 慢设备自适应 |
+| `server/ws.mjs` | 自实现 WebSocket + Hub（多设备、zone-scoped 广播、僵尸清理、协议层心跳 `hub.pingAll()`、`recordLoadedMs` 上报收集） |
 | `server/db.mjs` | SQLite 表结构（admins / tracks / devices / playback_state / sessions / zones / playlists） |
 | `server/auth.mjs` | scrypt 密码哈希 + 自管 session（cookie: `juguang.sid`） |
-| `server/multipart.mjs` | 自实现 multipart/form-data 解析（上限 200MB） |
-| `server/audio-probe.mjs` | MP3 时长探测（首帧 bitrate 推算，CBR 准，VBR 近似） |
+| `server/multipart.mjs` | 自实现 multipart/form-data 解析（上限 1GB） |
+| `server/audio-probe.mjs` | MP3 / WAV 时长探测（MP3 首帧 bitrate 推算 CBR 准 VBR 近似；WAV 读 RIFF data/byteRate） |
 | `server/init-admin.mjs` | 初始化管理员 CLI |
-| `web/sync.js` | 客户端同步核心：NTP 时钟同步、漂移修正、Web Audio 调度 |
+| `web/sync.js` | 客户端同步核心：NTP 时钟同步、漂移修正、Web Audio 调度、iOS 解锁（`playsinline` / `ctx.onstatechange` / `needsUserGesture`）、MediaError 分码、`bufferAheadMs` 上报 |
 | `scripts/deploy.sh` | 本机一键部署（git + WebDAV） |
 
 **同步原理要点**（详见 README §"同步原理"）：
 
 1. 客户端每 2s ping 一次，取最近 10 次 RTT 最小 3 次的 offset 中位数作为时钟差
-2. 服务端 `play` 命令带 `startServerTime = now + 800ms`（`PRELOAD_MS`），客户端换算到本地时刻精确 `start()`
-3. 每 3s 比对实际位置 vs 应播位置：30–200ms 用 ±0.5% 速率追平，>200ms 直接 seek
+2. 服务端 `play` 命令带 `startServerTime = now + effectivePreloadMs`（基础 1500ms，慢设备上报 `loadedMs` 后按 zone 内最慢 ×2 + 500 自动拉长），客户端换算到本地时刻精确 `start()`
+3. 每 1.5s 比对实际位置 vs 应播位置：|drift| < 100ms 接受，|drift| ≥ 100ms 回到期望位置前 100ms 让音频自然追。**没有 playbackRate 微调路径** —— playbackRate 改变触发 DAC 重新锁定（LPCM 重协商），蓝牙/外置 DAC 上周期性触发就是"咯噔"声的根因。
+4. 客户端 `loadedmetadata` 就绪时上报 `reportLoaded { loadedMs }`，服务端缓存 `Map<deviceId, ms>`，`play()` 取 zone 内最慢动态调整
+5. 服务端每 `HEARTBEAT_INTERVAL_MS = 10s` 发 WS 协议层 ping frame，客户端自动回 pong；比 sweep（30s）更早发现半开连接
 
 **可调旋钮**：
-- `server/scheduler.mjs` `PRELOAD_MS`（默认 800，慢端可调 1200）
+- `server/scheduler.mjs` `PRELOAD_MS`（默认 1500，慢端可再调高）
+- `server/scheduler.mjs` `getEffectivePreloadMs(zoneId)`（v2：自动按上报数据动态拉长，无需手动调）
+- `server/ws.mjs` `HEARTBEAT_INTERVAL_MS`（默认 10000，协议层 ping 间隔）
+- `server/ws.mjs` `STALE_MS`（默认 30000，僵尸连接阈值）
 - `web/sync.js` `PING_INTERVAL_MS`（默认 2000，可调到 1000 加快收敛）
-- `web/sync.js` 漂移阈值 30/200 ms
+- `web/sync.js` `PING_BURST_INTERVAL_MS`（默认 100，收敛期间隔）
+- `web/sync.js` `DRIFT_CHECK_MS`（默认 1500，更小更平滑但 CPU 多）
+- `web/sync.js` `SEEK_THRESHOLD_MS`（默认 100，漂移超过才 seek）
 
 ## 6. 验证流程
 
