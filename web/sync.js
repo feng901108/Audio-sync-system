@@ -49,7 +49,7 @@ export class SyncClient {
     this.startServerTime = 0;
     this.trackOffsetMs = 0;
     this.isPlaying = false;
-    this.playTimer = null;    // 定时起播（对齐服务端 startServerTime）
+    this.playTimer = null;    // 定时起播（对齐服务端 startServerTime）— 短间隔轮询, 非 setTimeout
     this.pauseTimer = null;   // 定时暂停（对齐服务端 atServerTime）
     this._gen = 0;            // 起播代次：快速切歌时让旧 loadedmetadata 回调自废
     this._seekCooldownUntil = 0; // 强制 seek 后短暂屏蔽 drift，避免 seek 风暴
@@ -383,10 +383,17 @@ export class SyncClient {
       const localTargetMs = startServerTime - this._clockOffset();
       const delay = Math.max(0, localTargetMs - _now());
       _log(`begin trackId=${trackId} dur=${durationMs}ms offset=${trackOffsetMs}ms delay=${delay}ms loadedMs=${this._lastLoadedMs}`);
-      if (this.playTimer) clearTimeout(this.playTimer);
-      this.playTimer = setTimeout(() => {
-        if (gen !== this._gen) return;
-        this.audio?.play().then(() => {
+      // 行业标准 "look-ahead scheduling" 模式（web.dev Audio Scheduling）:
+      // 单次长 setTimeout(fn, 1500ms) jitter = ±10–50ms（主线程被 layout/GC 阻塞时）。
+      // 改用 25ms 短间隔轮询，在每 tick 检查 _now() >= localTargetMs 才执行 play()，
+      // 有效 jitter <25ms。多设备初始相位差直接受益。
+      if (this.playTimer) clearInterval(this.playTimer);
+      this.playTimer = setInterval(() => {
+        if (gen !== this._gen) { clearInterval(this.playTimer); this.playTimer = null; return; }
+        if (_now() >= localTargetMs) {
+          clearInterval(this.playTimer);
+          this.playTimer = null;
+          this.audio?.play().then(() => {
           // play() 在异步 resolve 期间可能已被新 play / stop 取代：
           //   - 新 _startTrack 会递增 _gen
           //   - stop 会 _stopAudio(true) 然后 this.isPlaying=false
@@ -401,7 +408,8 @@ export class SyncClient {
           this.isPlaying = false;
           this._update({ isPlaying: false, needsUserGesture: true });
         });
-      }, delay);
+        }  // _now() >= localTargetMs
+      }, 25);
     };
 
     if (urlChanged) {
@@ -425,7 +433,7 @@ export class SyncClient {
   }
 
   _stopAudio(clearBuffer) {
-    if (this.playTimer) { clearTimeout(this.playTimer); this.playTimer = null; }
+    if (this.playTimer) { clearInterval(this.playTimer); this.playTimer = null; }
     if (this.pauseTimer) { clearTimeout(this.pauseTimer); this.pauseTimer = null; }
     if (this.audio) {
       try { this.audio.pause(); } catch {}
