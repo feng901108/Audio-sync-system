@@ -5,6 +5,7 @@ const DRIFT_CHECK_MS = 1500;      // 漂移检查周期
 const SEEK_THRESHOLD_MS = 100;    // 单一阈值：<100ms 接受，≥100ms seek
 const SEEK_COOLDOWN_MS = 2000;    // seek 后冷却：给 Safari audio.currentTime 稳定时间（≥2×DRIFT_CHECK_MS 防反馈环）
 const MAX_DRIFT_SEEKS = 10;       // 同曲漂移 seek 上限：超此值 clock offset 或 currentTime 严重异常，停 seek 等下一首
+const MIN_BUFFER_FOR_SEEK_MS = 800; // seek 前缓冲下限：缓冲低于此值不 seek（seek 会清空缓冲，starve 比不同步更差）
 const MAX_ERROR_RETRIES = 3;      // audio.onerror 连续失败 N 次后回滚 isPlaying（避免 silent stuck）
 const MAX_RECONNECT_BACKOFF_MS = 30000; // WS 重连退避上限（1.5s → 3s → 6s → 12s → 24s → 30s 封顶）
 const HEARTBEAT_GRACE_MS = 12000; // 服务端应用层心跳最大间隔：超此值视作服务端异常，触发主动重连
@@ -64,6 +65,7 @@ export class SyncClient {
     this._lastPongAt = 0;       // 最近一次收到 pong 的 monotonic 时间戳
     this._reconnectAttempt = 0; // WS 重连退避计数（每次 onclose 自增）
     this._driftSeeksThisTrack = 0; // 当前曲目漂移 seek 计数（同曲超 MAX_DRIFT_SEEKS 停 seek）
+    this._actualSecHistory = [];    // Safari currentTime 移动平均窗口（平滑 ~250ms 粗粒度采样噪声）
     // 两层音量：master 来自服务端下发（admin 调的），local 是用户本机拉杆（0-1 倍率）
     this.masterVolume = 1;
     this.localVolume = 1;
@@ -360,6 +362,8 @@ export class SyncClient {
       this._errorRetries = 0;
       // 新曲重置漂移 seek 计数：上一曲的累计 seek 不应限制新曲的漂移修正
       this._driftSeeksThisTrack = 0;
+      // 新曲重置 currentTime 移动平均窗口
+      this._actualSecHistory = [];
     } else if (this.currentTrackId !== trackId) {
       this.currentTrackId = trackId;
     }
@@ -456,13 +460,21 @@ export class SyncClient {
     }
     // 强制 seek 后屏蔽一小段，避免 seek 未完成时再次判定漂移触发 seek 风暴
     if (_now() < this._seekCooldownUntil) return;
-    const actualSec = this.audio.currentTime;
+
+    // Safari audio.currentTime 每 ~250ms 才更新一次（Chrome ~50ms），
+    // 单点采样噪声可达 ±125ms，接近 SEEK_THRESHOLD(100ms) 会误触发 seek。
+    // 用 2 样本移动平均平滑，把噪声压低到 ~±60ms，减误触发。
+    this._actualSecHistory.push(this.audio.currentTime);
+    if (this._actualSecHistory.length > 2) this._actualSecHistory.shift();
+    const actualSec = this._actualSecHistory.reduce((a, b) => a + b, 0) / this._actualSecHistory.length;
+
     const expectedSec = (this._serverNow() - this.startServerTime) / 1000 + this.trackOffsetMs / 1000;
     const driftMs = (actualSec - expectedSec) * 1000;
+    const bufferAheadMs = this._bufferAheadMs();
     this._update({
       positionMs: Math.max(0, Math.round(actualSec * 1000)),
       driftMs: Math.round(driftMs),
-      bufferAheadMs: this._bufferAheadMs(),
+      bufferAheadMs,
     });
 
     const abs = Math.abs(driftMs);
@@ -473,6 +485,13 @@ export class SyncClient {
         this._update({ seekCount: (this.status.seekCount ?? 0) + 1 });
         return;
       }
+
+      // 缓冲不足时不 seek：seek 会清空浏览器 audio buffer，如果缓冲 < MIN_BUFFER_FOR_SEEK_MS
+      // 则 seek 后立即 starve（实际静音），比轻微不同步更差。等缓冲恢复后再修。
+      if (bufferAheadMs > 0 && bufferAheadMs < MIN_BUFFER_FOR_SEEK_MS) {
+        return;
+      }
+
       this._driftSeeksThisTrack++;
 
       // v2 关键修复：不再回退 SEEK_BACK_MS。旧逻辑 seek 到 expectedSec − 100ms，
@@ -484,10 +503,12 @@ export class SyncClient {
       // 让 expectedSec 从此刻重新基于实际位置计算。这样 seek 后的 drift 基线为 0，
       // 后续只在真实时钟漂移或 playbackRate 差异时才触发 seek（而非自激）。
       this._seekCooldownUntil = _now() + SEEK_COOLDOWN_MS;
+      // seek 触发时重置移动平均窗口：seek 后 currentTime 跳变，旧样本已无效
+      this._actualSecHistory = [];
       const newSeekCount = (this.status.seekCount ?? 0) + 1;
       const targetSec = expectedSec;
       this._update({ seekCount: newSeekCount });
-      _log(`seek #${newSeekCount}: drift=${Math.round(driftMs)}ms audio=${actualSec.toFixed(2)}s expected=${expectedSec.toFixed(2)}s bufferedAhead=${this._bufferAheadMs()}ms`);
+      _log(`seek #${newSeekCount}: drift=${Math.round(driftMs)}ms audio=${actualSec.toFixed(2)}s expected=${expectedSec.toFixed(2)}s bufferedAhead=${bufferAheadMs}ms`);
       try {
         this.audio.currentTime = Math.max(0, targetSec);
       } catch {}

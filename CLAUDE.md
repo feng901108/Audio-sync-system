@@ -135,6 +135,7 @@ node -e "import('./server/scheduler.mjs').then(m => console.log('scheduler.mjs e
 - `web/sync.js` `SEEK_THRESHOLD_MS`（默认 100，漂移超过才 seek）
 - `web/sync.js` `SEEK_COOLDOWN_MS`（默认 2000，seek 后冷却）
 - `web/sync.js` `MAX_DRIFT_SEEKS`（默认 10，同曲 seek 上限防反馈环）
+- `web/sync.js` `MIN_BUFFER_FOR_SEEK_MS`（默认 800，缓冲低于此值不 seek，starve 比不同步更差）
 
 ## 6. 验证流程
 
