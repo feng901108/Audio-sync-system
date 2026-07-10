@@ -102,6 +102,8 @@
           <div class="meta-item"><span class="meta-label">缓冲</span><span class="meta-value muted" id="diag-buffer">—</span></div>
           <div class="meta-item"><span class="meta-label">seek 次数</span><span class="meta-value muted" id="diag-seeks">0</span></div>
           <div class="meta-item"><span class="meta-label">MediaError</span><span class="meta-value muted" id="diag-err">0</span></div>
+          <div class="meta-item"><span class="meta-label">卡顿次数</span><span class="meta-value muted" id="diag-stalls">0</span></div>
+          <div class="meta-item"><span class="meta-label">速率</span><span class="meta-value muted" id="diag-rate">1.000×</span></div>
           <div class="meta-item" style="grid-column:span 2;"><span class="meta-label">设备</span><span class="meta-value muted" id="diag-device">—</span></div>
         </div>
       </details>
@@ -203,6 +205,12 @@ $("join-btn").addEventListener("click", async () => {
     $("diag-seeks").textContent = String(s.seekCount ?? 0);
     $("diag-err").textContent = `${s.mediaErrorCode ?? 0}${s.mediaErrorCode ? "（1=中止 2=网络 3=解码 4=不支持）" : ""}`;
     $("diag-err").classList.toggle("muted", !s.mediaErrorCode);
+    // 卡顿 = waiting 事件（缓冲耗尽真停住），和 seek 次数分开看：
+    // seek多卡顿少 → 修正过频；卡顿多 seek 少 → 网络/缓冲问题
+    $("diag-stalls").textContent = `${s.stallCount ?? 0}${s.lastStallMs ? `（上次 ${s.lastStallMs}ms）` : ""}`;
+    $("diag-stalls").classList.toggle("muted", !s.stallCount);
+    $("diag-rate").textContent = `${(s.playbackRate ?? 1).toFixed(3)}×`;
+    $("diag-rate").classList.toggle("muted", (s.playbackRate ?? 1) === 1);
     // UA 浏览器识别：Chrome UA 同时含 Chrome/ + Safari/，要按 Edg→OPR→Firefox→Chrome→Safari 顺序剔除
     let uaBrowser = "Web";
     if (s.isIos) uaBrowser = "iOS Safari";

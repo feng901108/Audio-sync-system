@@ -1,6 +1,6 @@
 # 聚光广播 (Juguang) · 项目规范
 
-> **状态：🟢 v2 已合并 main** | 最后更新：2026-07-09 | v2 同步优化 + code-review 修复 11 项 + 安卓客户端文档就绪 | 待 NAS 端 docker rebuild 验证上线
+> **状态：🟢 v3 已合并 main** | 最后更新：2026-07-10 | v3 播放平滑化（微速率伺服替代 seek 修正，借鉴 Snapcast/AirPlay）| 待 NAS 端 docker rebuild 验证上线
 
 > 园区多设备音频同步广播系统。一处选歌，多端 < 80ms 内同步播放。
 > 服务端零依赖（Node.js ≥ 22.5 内置 `node:sqlite`），前端零构建。
@@ -120,7 +120,7 @@ node -e "import('./server/scheduler.mjs').then(m => console.log('scheduler.mjs e
 
 1. 客户端每 2s ping 一次，取最近 10 次 RTT 最小 3 次的 offset 中位数作为时钟差
 2. 服务端 `play` 命令带 `startServerTime = now + effectivePreloadMs`（基础 1500ms，慢设备上报 `loadedMs` 后按 zone 内最慢 ×2 + 500 自动拉长），客户端换算到本地时刻精确 `start()`
-3. 每 1.5s 比对实际位置 vs 应播位置：|drift| < 100ms 接受，|drift| ≥ 100ms 直接 seek 到预期位置并校准 `startServerTime`（漂移基线归零，杜绝反馈环）。**没有 playbackRate 微调路径** —— playbackRate 改变触发 DAC 重新锁定（LPCM 重协商），蓝牙/外置 DAC 上周期性触发就是"咯噔"声的根因。
+3. 每 0.5s 用**插值位置时钟**（currentTime 变化记锚点 + monotonic 外推，消除 Safari 250ms 量化噪声）比对预期位置（含 `outputLatency` 补偿，对齐扬声器出声）：|drift| ≤ 30ms 死区不动；30–500ms 用 **±1.5% playbackRate 微速率伺服**渐进收敛（`preservesPitch=false` 纯重采样——v3 更正：v1 的"咯噔"声是 WSOLA 时间拉伸伪影 + 1.0↔0.95 硬切换，不是 DAC 重锁；playbackRate 从不改变输出流采样率）；≥500ms 才硬 seek（最后手段，带缓冲守卫 + 同曲上限）。这是 Snapcast/Sonos/AirPlay 多房间系统的标准做法。
 4. 客户端 `loadedmetadata` 就绪时上报 `reportLoaded { loadedMs }`，服务端缓存 `Map<deviceId, ms>`，`play()` 取 zone 内最慢动态调整
 5. 服务端每 `HEARTBEAT_INTERVAL_MS = 10s` 发 WS 协议层 ping frame，客户端自动回 pong；比 sweep（30s）更早发现半开连接
 
@@ -131,10 +131,14 @@ node -e "import('./server/scheduler.mjs').then(m => console.log('scheduler.mjs e
 - `server/ws.mjs` `STALE_MS`（默认 30000，僵尸连接阈值）
 - `web/sync.js` `PING_INTERVAL_MS`（默认 2000，可调到 1000 加快收敛）
 - `web/sync.js` `PING_BURST_INTERVAL_MS`（默认 100，收敛期间隔）
-- `web/sync.js` `DRIFT_CHECK_MS`（默认 1500，更小更平滑但 CPU 多）
-- `web/sync.js` `SEEK_THRESHOLD_MS`（默认 100，漂移超过才 seek）
-- `web/sync.js` `SEEK_COOLDOWN_MS`（默认 2000，seek 后冷却）
-- `web/sync.js` `MAX_DRIFT_SEEKS`（默认 10，同曲 seek 上限防反馈环）
+- `web/sync.js` `DRIFT_CHECK_MS`（默认 500，伺服修正周期）
+- `web/sync.js` `RATE_SERVO_ENABLED`（默认 true；**现场若疑有爆音置 false 一键回退纯 seek 模式**）
+- `web/sync.js` `RATE_SERVO_MAX`（默认 0.015 = ±1.5% 速率上限 ≈26 音分封顶）
+- `web/sync.js` `RATE_SERVO_HORIZON_S`（默认 8，伺服收敛时间常数）
+- `web/sync.js` `DRIFT_DEADBAND_MS`（默认 30，死区内完全不修）
+- `web/sync.js` `SEEK_THRESHOLD_MS`（默认 500，硬 seek 只做最后手段）
+- `web/sync.js` `SEEK_COOLDOWN_MS`（默认 2000 兜底，seeked 事件会提前到 +300ms）
+- `web/sync.js` `MAX_DRIFT_SEEKS`（默认 10，同曲 seek 上限防风暴）
 - `web/sync.js` `MIN_BUFFER_FOR_SEEK_MS`（默认 800，缓冲低于此值不 seek，starve 比不同步更差）
 
 ## 6. 验证流程

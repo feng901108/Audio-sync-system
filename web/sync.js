@@ -1,9 +1,13 @@
 const PING_INTERVAL_MS = 2000;
 const PING_BURST_COUNT = 5;
 const PING_BURST_INTERVAL_MS = 100;
-const DRIFT_CHECK_MS = 1500;      // 漂移检查周期
-const SEEK_THRESHOLD_MS = 100;    // 单一阈值：<100ms 接受，≥100ms seek
-const SEEK_COOLDOWN_MS = 2000;    // seek 后冷却：给 Safari audio.currentTime 稳定时间（≥2×DRIFT_CHECK_MS 防反馈环）
+const DRIFT_CHECK_MS = 500;       // 漂移检查周期（伺服模式需要更频繁的小步修正；DOM 开销 2Hz 可忽略）
+const DRIFT_DEADBAND_MS = 30;     // 死区：|drift| ≤ 此值完全不动（人耳无感，避免永久微调抖动）
+const RATE_SERVO_ENABLED = true;  // 微速率伺服开关。若现场再出现爆音疑虑，置 false 回退纯 seek 模式
+const RATE_SERVO_MAX = 0.015;     // 伺服速率偏移上限 ±1.5%（纯重采样 ≈26 音分封顶，BGM 场景无感；Snapcast 同量级）
+const RATE_SERVO_HORIZON_S = 8;   // 伺服收敛时间常数：目标 ~8s 内消化当前漂移（P 控制器分母）
+const SEEK_THRESHOLD_MS = 500;    // 硬 seek 阈值：只有大错位（网络卡死恢复/标签页冻结唤醒）才 seek——seek 必产生可闻断口
+const SEEK_COOLDOWN_MS = 2000;    // seek 后冷却上限（seeked 事件会把冷却提前到完成后 300ms，这里是兜底）
 const MAX_DRIFT_SEEKS = 10;       // 同曲漂移 seek 上限：超此值 clock offset 或 currentTime 严重异常，停 seek 等下一首
 const MIN_BUFFER_FOR_SEEK_MS = 800; // seek 前缓冲下限：缓冲低于此值不 seek（seek 会清空缓冲，starve 比不同步更差）
 const MAX_ERROR_RETRIES = 3;      // audio.onerror 连续失败 N 次后回滚 isPlaying（避免 silent stuck）
@@ -65,7 +69,11 @@ export class SyncClient {
     this._lastPongAt = 0;       // 最近一次收到 pong 的 monotonic 时间戳
     this._reconnectAttempt = 0; // WS 重连退避计数（每次 onclose 自增）
     this._driftSeeksThisTrack = 0; // 当前曲目漂移 seek 计数（同曲超 MAX_DRIFT_SEEKS 停 seek）
-    this._actualSecHistory = [];    // Safari currentTime 移动平均窗口（平滑 ~250ms 粗粒度采样噪声）
+    this._posAnchorRaw = -1;    // 插值位置时钟锚点：currentTime 最近一次"变化"的值
+    this._posAnchorAt = 0;      //   及其 monotonic 时刻。Safari currentTime 每 ~250ms 才步进，
+    //   锚点 + 外推可把位置精度从 ±125ms 提到 ~5-10ms（视频播放器字幕同步的标准手法）
+    this._seekStartedAt = 0;    // seeking→seeked 计时：测 seek 耗时 + 区分 seek 型 waiting
+    this._stallStartAt = 0;     // waiting→playing 计时：真缓冲卡顿（网络 starve）
     // 两层音量：master 来自服务端下发（admin 调的），local 是用户本机拉杆（0-1 倍率）
     this.masterVolume = 1;
     this.localVolume = 1;
@@ -76,6 +84,9 @@ export class SyncClient {
       zoneId: this.zoneId, zoneName: null,
       bufferAheadMs: 0,  // 预缓冲前瞻秒数，0 表示已耗尽
       seekCount: 0,      // 漂移 seek 累计次数（调试用）
+      stallCount: 0,     // 缓冲耗尽卡顿次数（waiting 事件，不含 seek 引发的）
+      lastStallMs: 0,    // 最近一次卡顿时长
+      playbackRate: 1,   // 当前伺服速率（1=正常；0.985-1.015 之间微调）
       audioContextState: "closed",  // AudioContext.state：closed/suspended/running
       mediaErrorCode: 0,  // audio.error?.code：0=OK, 1=ABORTED, 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED
       needsUserGesture: false,  // iOS: autoplay 被拒需用户点一下恢复
@@ -117,6 +128,12 @@ export class SyncClient {
       // preload="metadata" 只下载头部元数据，靠 Range 按需拉数据流式播放
       // （不用 "auto"——iOS 上 auto 可能预下载整文件，破坏 300MB 白噪音不 OOM 的设计目标）
       this.audio.preload = "metadata";
+      // 纯重采样模式：rate≠1 时不做时间拉伸（WSOLA）。v1 "playbackRate 咯噔声"的
+      // 真实机理是 preservesPitch 默认 true 的 WSOLA 帧拼接伪影 + 1.0↔0.95 硬切换——
+      // 不是 DAC 重锁（playbackRate 从不改变输出流采样率/格式，蓝牙链路 PCM 始终连续）。
+      // 重采样模式下 ±1.5% 只是 ≤26 音分的音高偏移，BGM 无感（Snapcast/Sonos 同款方案）。
+      this.audio.preservesPitch = false;
+      try { this.audio.webkitPreservesPitch = false; } catch {}
       // 同源部署不需要 crossOrigin；设了反而要求服务端 CORS 头，跨域缺失会被静音
       this.mediaNode = this.ctx.createMediaElementSource(this.audio);
       this.mediaNode.connect(this.gain);
@@ -167,6 +184,34 @@ export class SyncClient {
           }
         }, 1000);
       };
+      // 事件驱动的卡顿诊断（hls.js/Shaka 的状态机手法）：
+      // waiting = 缓冲耗尽真停住（网络 starve）；playing = 恢复。
+      // seek 引发的 waiting 不算网络卡顿（用 _seekStartedAt 区分）。
+      this.audio.addEventListener("waiting", () => {
+        if (!this.isPlaying || this._seekStartedAt) return;
+        this._stallStartAt = _now();
+        this._update({ stallCount: (this.status.stallCount ?? 0) + 1 });
+      });
+      this.audio.addEventListener("playing", () => {
+        if (this._stallStartAt) {
+          this._update({ lastStallMs: Math.round(_now() - this._stallStartAt) });
+          this._stallStartAt = 0;
+        }
+        // 恢复播放 = 位置锚点重建（插值时钟从这里重新外推）
+        this._posAnchorRaw = this.audio.currentTime;
+        this._posAnchorAt = _now();
+      });
+      // seek 生命周期：测耗时；seeked 后提前结束漂移冷却（不等满 2s 兜底）
+      this.audio.addEventListener("seeking", () => { this._seekStartedAt = _now(); });
+      this.audio.addEventListener("seeked", () => {
+        if (this._seekStartedAt) {
+          _log(`seeked in ${Math.round(_now() - this._seekStartedAt)}ms`);
+          this._seekStartedAt = 0;
+        }
+        this._posAnchorRaw = this.audio.currentTime;
+        this._posAnchorAt = _now();
+        this._seekCooldownUntil = Math.min(this._seekCooldownUntil, _now() + 300);
+      });
     }
     // iOS 关键：必须先 resume() AudioContext 才能让声音从扬声器出来。
     // iOS 14+ 即使是 createMediaElementSource 后 resume() 也可能因为不在 user gesture 内被拒。
@@ -362,8 +407,8 @@ export class SyncClient {
       this._errorRetries = 0;
       // 新曲重置漂移 seek 计数：上一曲的累计 seek 不应限制新曲的漂移修正
       this._driftSeeksThisTrack = 0;
-      // 新曲重置 currentTime 移动平均窗口
-      this._actualSecHistory = [];
+      // 新曲位置锚点作废（loadedmetadata / playing 事件里重建）
+      this._posAnchorRaw = -1;
     } else if (this.currentTrackId !== trackId) {
       this.currentTrackId = trackId;
     }
@@ -380,6 +425,8 @@ export class SyncClient {
         this._reportLoadedMs(this._lastLoadedMs);
       }
       try { this.audio.currentTime = Math.max(0, trackOffsetMs / 1000); } catch {}
+      try { this.audio.playbackRate = 1; } catch {} // 新一轮起播回正伺服速率
+      this._posAnchorRaw = -1; // 位置锚点作废，seeked/playing 事件里重建
       const localTargetMs = startServerTime - this._clockOffset();
       const delay = Math.max(0, localTargetMs - _now());
       _log(`begin trackId=${trackId} dur=${durationMs}ms offset=${trackOffsetMs}ms delay=${delay}ms loadedMs=${this._lastLoadedMs}`);
@@ -437,6 +484,7 @@ export class SyncClient {
     if (this.pauseTimer) { clearTimeout(this.pauseTimer); this.pauseTimer = null; }
     if (this.audio) {
       try { this.audio.pause(); } catch {}
+      try { this.audio.playbackRate = 1; } catch {} // 停止时回正伺服速率
       if (clearBuffer) {
         try {
           this.audio.currentTime = 0;
@@ -467,67 +515,80 @@ export class SyncClient {
       return;
     }
     // 强制 seek 后屏蔽一小段，避免 seek 未完成时再次判定漂移触发 seek 风暴
+    // （seeked 事件会把冷却提前到完成后 300ms，这里是兜底上限）
     if (_now() < this._seekCooldownUntil) return;
 
-    // Safari audio.currentTime 每 ~250ms 才更新一次（Chrome ~50ms），
-    // 单点采样噪声可达 ±125ms，接近 SEEK_THRESHOLD(100ms) 会误触发 seek。
-    // 用 2 样本移动平均平滑，把噪声压低到 ~±60ms，减误触发。
-    this._actualSecHistory.push(this.audio.currentTime);
-    if (this._actualSecHistory.length > 2) this._actualSecHistory.shift();
-    const actualSec = this._actualSecHistory.reduce((a, b) => a + b, 0) / this._actualSecHistory.length;
+    // 插值位置时钟（成熟播放器手法）：raw currentTime 变化时记锚点，
+    // 未变化时用 monotonic × playbackRate 外推。Safari currentTime 每 ~250ms
+    // 才步进（噪声 ±125ms），插值后精度 ~5-10ms——伺服和 seek 判定都不再被噪声骗。
+    const actualSec = this._estPositionSec();
 
-    const expectedSec = (this._serverNow() - this.startServerTime) / 1000 + this.trackOffsetMs / 1000;
+    // outputLatency 补偿（AirPlay 手法）：蓝牙/外置声卡有 100-300ms 输出延迟且各设备不同。
+    // 把各自的延迟加进预期位置 → 对齐"扬声器出声"而非"解码位置"。
+    // Safari 没有 outputLatency 用 baseLatency 兜底（≈5-20ms），clamp 1s 防异常值。
+    const outLatSec = Math.min(1, (Number.isFinite(this.ctx?.outputLatency) ? this.ctx.outputLatency : this.ctx?.baseLatency) || 0);
+    const expectedSec = (this._serverNow() - this.startServerTime) / 1000 + this.trackOffsetMs / 1000 + outLatSec;
     const driftMs = (actualSec - expectedSec) * 1000;
     const bufferAheadMs = this._bufferAheadMs();
-    this._update({
+    const abs = Math.abs(driftMs);
+    const patch = {
       positionMs: Math.max(0, Math.round(actualSec * 1000)),
       driftMs: Math.round(driftMs),
       bufferAheadMs,
-    });
+    };
 
-    const abs = Math.abs(driftMs);
-    if (abs >= SEEK_THRESHOLD_MS) {
-      // 同曲 seek 上限：超此值说明 clock offset 或 audio.currentTime 严重异常（Safari 偶发），
-      // 继续 seek 只会制造更多卡顿。停 seek，只在诊断面板显示 drift 供排查。
-      if (this._driftSeeksThisTrack >= MAX_DRIFT_SEEKS) {
-        this._update({ seekCount: (this.status.seekCount ?? 0) + 1 });
-        return;
+    if (RATE_SERVO_ENABLED && abs < SEEK_THRESHOLD_MS) {
+      // 微速率伺服（Snapcast/Sonos/AirPlay 的标准做法）：小漂移不 seek——
+      // seek 必产生 20-300ms 可闻断口；用 ≤±1.5% 的 playbackRate 连续微调渐进收敛。
+      // preservesPitch=false（元素创建时已设）→ 纯重采样，无时间拉伸伪影。
+      let rate = 1;
+      if (abs > DRIFT_DEADBAND_MS) {
+        // P 控制器：目标 ~RATE_SERVO_HORIZON_S 秒消化当前漂移。落后（drift<0）加速。
+        // 量化到 0.1% 步进，减少无意义的 playbackRate 赋值抖动。
+        const corr = Math.max(-RATE_SERVO_MAX, Math.min(RATE_SERVO_MAX, -(driftMs / 1000) / RATE_SERVO_HORIZON_S));
+        rate = 1 + Math.round(corr * 1000) / 1000;
       }
-
-      // 缓冲不足时不 seek：seek 会清空浏览器 audio buffer，如果缓冲 < MIN_BUFFER_FOR_SEEK_MS
-      // 则 seek 后立即 starve（实际静音），比轻微不同步更差。等缓冲恢复后再修。
-      if (bufferAheadMs > 0 && bufferAheadMs < MIN_BUFFER_FOR_SEEK_MS) {
-        return;
+      if (this.audio.playbackRate !== rate) {
+        try { this.audio.playbackRate = rate; } catch {}
       }
+      patch.playbackRate = rate;
+    } else if (abs >= SEEK_THRESHOLD_MS) {
+      // 硬 seek = 最后手段：只处理大错位（网络卡死恢复/标签页冻结唤醒/伺服关闭时）。
+      // 同曲上限：超限说明时钟或音频引擎异常，继续 seek 只会更卡（不再自增 seekCount 免得吓人）。
+      if (this._driftSeeksThisTrack >= MAX_DRIFT_SEEKS) { this._update(patch); return; }
+      // 缓冲不足不 seek：seek 清空缓冲，starve 静音比不同步更差，等缓冲恢复再修。
+      if (bufferAheadMs > 0 && bufferAheadMs < MIN_BUFFER_FOR_SEEK_MS) { this._update(patch); return; }
 
       this._driftSeeksThisTrack++;
-
-      // v2 关键修复：不再回退 SEEK_BACK_MS。旧逻辑 seek 到 expectedSec − 100ms，
-      // 但这种"让音频自然追"的做法制造了一个永久 −100ms offset——每次 cooldown 到期
-      // 后 |drift| 恰好 ≥ 100ms，触发下一个 seek，形成自激反馈环。
-      // 实测 Safari 上 seek 51 次 / 76 秒，缓冲 211s 完全健康——问题不在网络，在算法。
-      //
-      // 正确做法：seek 到精确 expectedSec，然后立刻校准 startServerTime，
-      // 让 expectedSec 从此刻重新基于实际位置计算。这样 seek 后的 drift 基线为 0，
-      // 后续只在真实时钟漂移或 playbackRate 差异时才触发 seek（而非自激）。
       this._seekCooldownUntil = _now() + SEEK_COOLDOWN_MS;
-      // seek 触发时重置移动平均窗口：seek 后 currentTime 跳变，旧样本已无效
-      this._actualSecHistory = [];
-      const newSeekCount = (this.status.seekCount ?? 0) + 1;
-      const targetSec = expectedSec;
-      this._update({ seekCount: newSeekCount });
-      _log(`seek #${newSeekCount}: drift=${Math.round(driftMs)}ms audio=${actualSec.toFixed(2)}s expected=${expectedSec.toFixed(2)}s bufferedAhead=${bufferAheadMs}ms`);
-      try {
-        this.audio.currentTime = Math.max(0, targetSec);
-      } catch {}
-
-      // 校准 startServerTime：让 expectedSec == audio.currentTime 在此刻成立。
-      // 不依赖 audio.currentTime（Safari seek 后可能还没稳定），用请求的 targetSec。
-      // expectedSec = (serverNow - startServerTime)/1000 + trackOffsetMs/1000
-      // → startServerTime = serverNow - (targetSec - trackOffsetMs/1000) * 1000
-      const serverNow = this._serverNow();
-      this.startServerTime = serverNow - (targetSec - this.trackOffsetMs / 1000) * 1000;
+      try { this.audio.playbackRate = 1; } catch {} // seek 前回正伺服速率
+      patch.playbackRate = 1;
+      patch.seekCount = (this.status.seekCount ?? 0) + 1;
+      _log(`seek #${patch.seekCount}: drift=${Math.round(driftMs)}ms audio=${actualSec.toFixed(2)}s expected=${expectedSec.toFixed(2)}s bufferedAhead=${bufferAheadMs}ms`);
+      try { this.audio.currentTime = Math.max(0, expectedSec); } catch {}
+      this._posAnchorRaw = -1; // 位置锚点作废，seeked 事件里重建
+      // 注：不需要"校准 startServerTime"——seek 目标就是原时间线上的预期位置，
+      // 时间线锚点保持不变才能让全 zone 设备收敛到同一条时间轴。
     }
+
+    this._update(patch);
+  }
+
+  // 插值位置时钟：raw currentTime 变化时记锚点，未变化时按 monotonic × rate 外推。
+  // 外推上限 600ms：超过说明播放真停住了（stall），不把估计位置虚推过去。
+  _estPositionSec() {
+    if (!this.audio) return 0;
+    const raw = this.audio.currentTime;
+    const now = _now();
+    if (raw !== this._posAnchorRaw) {
+      this._posAnchorRaw = raw;
+      this._posAnchorAt = now;
+      return raw;
+    }
+    if (this.audio.paused) return raw;
+    const dt = (now - this._posAnchorAt) / 1000;
+    if (dt > 0.6) return raw;
+    return raw + dt * (this.audio.playbackRate || 1);
   }
 
   // 源缓冲前瞻：buffered.end(last) - currentTime，单位 ms。

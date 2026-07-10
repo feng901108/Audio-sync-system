@@ -181,7 +181,7 @@ juguang/
 
 1. **NTP 风格时钟同步**：每 2s 客户端 ping 服务端，取最近 10 次 RTT 最小 3 次的 offset 中位数作为本地-服务端时钟差。
 2. **预约调度**：`play` 命令带 `startServerTime = now + PRELOAD_MS`（默认 1500ms 预加载缓冲），客户端换算到本地时刻精确 `start()`。
-3. **漂移修正**：每 1.5s 比对应播位置 vs 实播位置：|drift| < 100ms 接受，|drift| ≥ 100ms 直接 seek 到预期位置并校准 `startServerTime`（漂移基线归零，杜绝反馈环）。同曲最多 10 次 seek 后停修（防 `audio.currentTime` 异常或时钟污染导致的自激卡顿）。**没有 playbackRate 微调路径** —— `playbackRate` 改变会触发 DAC 重新锁定 LPCM，蓝牙/外置 DAC 上周期性触发造成可闻"咯噔"声，那是断音的根因。
+3. **漂移修正（v3 微速率伺服）**：每 0.5s 用插值位置时钟（消除 Safari currentTime 250ms 量化噪声）比对预期位置（含 outputLatency 补偿）：|drift| ≤ 30ms 死区不动；30–500ms 用 ±1.5% playbackRate 伺服渐进收敛——`preservesPitch=false` 纯重采样，≈26 音分封顶无感（Snapcast/Sonos/AirPlay 多房间系统的标准做法）；≥500ms 才硬 seek（最后手段，带缓冲守卫 + 同曲 10 次上限）。v3 更正历史误诊：v1 "playbackRate 咯噔声"的机理是 WSOLA 时间拉伸伪影（preservesPitch 默认 true）+ 速率硬切换，不是 DAC 重锁——playbackRate 从不改变输出流的采样率/格式。
 4. **中途加入**：新连接拿到 snapshot 时算投影位置 + 新 `startServerTime`，避免进度跳变。
 5. **慢设备自适应**（v2）：客户端上报 `reportLoaded { loadedMs }`，服务端按 zone 内最慢设备 ×2 + 500ms 动态拉长 `effectivePreloadMs`，避免快设备抢跑 / 慢设备漏 buffer。
 6. **协议层心跳**（v2）：服务端每 10s 发 WS ping frame（opcode 0x9），比 sweep（30s 阈值）更早发现"半开连接"——TCP 没 RST 但 VPN/路由器/4G 切换的场景。

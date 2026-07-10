@@ -119,27 +119,27 @@ projectedOffsetMs  = snap.trackOffsetMs + max(0, newStart - snap.startServerTime
 | 版本 | 方案 | 问题 |
 |---|---|---|
 | v1 | 直接 seek 到期望位置 | 大跳跃(几百 ms 到几秒)有"扑通"声 |
-| v2 | ±0.5% playbackRate 微调(200ms 阶跃) | 蓝牙/外置 DAC 上有可闻咔嗒声 |
-| v3 | ±0.3% playbackRate + 1500ms 长持续 | **仍有 DAC 重锁咯噔声(本次根因,见 §5.2)** |
-| **v4(当前)** | **完全去掉 playbackRate,单阈值 seek** | DAC 不再周期性重锁 |
+| v2 | ±0.5% playbackRate 微调(200ms 阶跃) | 蓝牙/外置 DAC 上有可闻咔嗒声(当年归因 DAC 重锁,§5.2 已更正:实为 WSOLA 伪影) |
+| v3 | ±0.3% playbackRate + 1500ms 长持续 | 同上 |
+| v4 | 完全去掉 playbackRate,单阈值 100ms seek | 每次修正都是 seek=可闻断口;Safari currentTime 噪声频繁误触发(§5.10 反馈环 + §5.11) |
+| **v5(当前)** | **微速率伺服 + 插值位置时钟 + seek 仅兜底**(§5.11) | Snapcast/Sonos/AirPlay 同款架构 |
 
 **当前方案**(`web/sync.js`):
 
 ```js
-每 1.5s 检查一次:
-  actualSec   = audio.currentTime
-  expectedSec = (serverNow() - startServerTime)/1000 + trackOffsetMs/1000
+每 0.5s 检查一次:
+  actualSec   = 插值位置时钟(currentTime 变化记锚点 + monotonic 外推,精度 ~5-10ms)
+  expectedSec = (serverNow() - startServerTime)/1000 + trackOffsetMs/1000 + outputLatency
   driftMs     = (actualSec - expectedSec) * 1000
 
-  if |driftMs| ≥ 100:
-    audio.currentTime = expectedSec  // 直接 seek 到预期位置
-    startServerTime校准             // 漂移基线归零，杜绝反馈环（v3 修复，见 §5.10）
-    冷却 2000ms(给 Safari audio.currentTime 稳定时间)
-  else:
-    不动(接受小漂移,人耳对 < 80ms 不敏感)
+  if |driftMs| ≤ 30:           不动(死区,回正 rate=1)
+  elif |driftMs| < 500:        playbackRate = 1 + clamp(-drift/8s, ±1.5%)   // 伺服,无断口
+  else:                        硬 seek 到 expectedSec(缓冲守卫 + 同曲上限 + seeked 事件结束冷却)
 ```
 
-**为什么接受 < 100ms 漂移**: 人耳对 < 80ms 相位差基本不敏感(< 50ms 完全无感,50-80ms 极少数人能察觉);且 100ms 是单方向漂移累积几分钟的结果,触发频率低。
+**为什么伺服而不是 seek**: seek 必然产生 20-300ms 可闻断口(解码器 flush + 重新定位);±1.5% 纯重采样速率偏移 ≈26 音分封顶,BGM 场景无感。80ms 漂移 ~8.5s 收敛、零断口。
+
+**为什么死区 30ms**: 人耳对 < 80ms 相位差基本不敏感;30ms 以下修正只是在追测量噪声。
 
 ### 2.5 流式播放
 
@@ -222,10 +222,15 @@ mode = "loop-all"    → 队头 + 当前曲移到队尾
 | `PING_BURST_INTERVAL_MS` | 100 | 同上 | 收敛期间隔 |
 | 时钟采样窗口 | 10 | 同上 | 最近 N 次采样 |
 | 最小 RTT 取数 | 3 | 同上 | 用于算 offset 中位数 |
-| `DRIFT_CHECK_MS` | 1500 | 同上 | 漂移检查周期 |
-| `SEEK_THRESHOLD_MS` | 100 | 同上 | 漂移 ≥ 此值才 seek |
-| `SEEK_COOLDOWN_MS` | 2000 | 同上 | seek 后屏蔽漂移检查（v3 拉长防反馈环） |
-| `MAX_DRIFT_SEEKS` | 10 | 同上 | 同曲漂移 seek 上限（v3：防 clock / currentTime 异常导致自激卡顿） |
+| `DRIFT_CHECK_MS` | 500 | 同上 | 伺服修正周期 |
+| `DRIFT_DEADBAND_MS` | 30 | 同上 | v5:死区,以下不修（追噪声无意义） |
+| `RATE_SERVO_ENABLED` | true | 同上 | v5:伺服开关（疑爆音时置 false 一键回退） |
+| `RATE_SERVO_MAX` | 0.015 | 同上 | v5:速率偏移上限 ±1.5%（≈26 音分封顶） |
+| `RATE_SERVO_HORIZON_S` | 8 | 同上 | v5:伺服收敛时间常数 |
+| `SEEK_THRESHOLD_MS` | 500 | 同上 | v5:硬 seek 仅兜底大错位 |
+| `SEEK_COOLDOWN_MS` | 2000 | 同上 | seek 后冷却兜底（seeked 事件提前到 +300ms） |
+| `MAX_DRIFT_SEEKS` | 10 | 同上 | 同曲漂移 seek 上限（防 clock / currentTime 异常导致自激卡顿） |
+| `MIN_BUFFER_FOR_SEEK_MS` | 800 | 同上 | 缓冲低于此值不 seek（starve 比不同步更差） |
 | `STALE_MS` | 30000 | `server/ws.mjs` | 清理僵尸连接(>30s 无帧) |
 | `SWEEP_INTERVAL_MS` | 5000 | 同上 | 服务端扫描间隔 |
 | `HEARTBEAT_INTERVAL_MS` | 10000 | 同上 | v2:协议层 WS ping 间隔(早发现半开连接) |
@@ -282,7 +287,7 @@ scheduler.next(zoneId)
 
 **v3 发现**: 这个回退制造了**漂移修正反馈环**。数学推导: seek 到 `E − 0.1s` → 实际位置从 `E − 0.1` 开始推进 → 冷却 1s 后实际 `E + 0.9`、预期 `E + 1.0` → `|drift| = 100ms ≥ 100` → 再 seek → 循环。Safari 实测 76 秒累计 51 次 seek,缓冲 211s 完全健康——问题不在网络,在算法自激。详见 §5.10。
 
-### 5.2 playbackRate 微调造成的周期性断音 ⭐本次根因⭐
+### 5.2 playbackRate 微调造成的周期性断音（v5 更正机理,方案已被 §5.11 伺服取代）
 
 **症状**: 用户报告"播放还是一断一断的,小文件也开始断了"。
 
@@ -296,12 +301,14 @@ scheduler.next(zoneId)
 4. **关键判断**: 不是幅度问题(±0.3% vs ±0.5%),是**触发动作本身**。任何 `playbackRate` 改变都会触发 DAC 重锁。
 5. 周期吻合: 1.5s 触发一次 = 1.5s 咯噔一次,与用户感受到的"持续断音"完全对应。
 
-**解决**: 完全去掉 `playbackRate` 路径,改成单一 seek 阈值 100ms。DAC 不再周期性重锁 → 断音消失。
+**当时的解决**: 完全去掉 `playbackRate` 路径,改成单一 seek 阈值 100ms。断音消失(观察正确)。
 
-**教训**:
-- 不要为了"平滑"引入副作用更大的机制;**最简单的方案常常最好**
-- ±0.5% / ±0.3% 这种"精细调整"在硬件面前无意义,DAC 不会感知到你的"精细"
-- 调试"听感问题"要先怀疑周期触发的副作用,再怀疑数据问题
+**v5 机理更正**(2026-07-10): 上面第 3 步的归因是错的——`playbackRate` **不会**触发 sample rate 协商或 DAC 重锁:浏览器在软件层做速率变换,输出流的采样率/格式恒定,蓝牙链路看到的 PCM 始终连续。真实机理:`preservesPitch` 默认 `true`,rate≠1 时浏览器跑 **WSOLA 时间拉伸**,其帧拼接伪影 + 每 1.5s 在 1.0↔0.997 之间硬切换(每次切换重启拉伸器) = 周期性"咯噔"。当年的修复有效是因为删掉了 WSOLA 触发点,不是因为 DAC 不再重锁。正确的做法(v5 §5.11):`preservesPitch=false`(纯重采样,无拉伸伪影)+ 小步连续调整(不硬切换)——这正是 Snapcast/Sonos 的标准方案。
+
+**教训**(更新):
+- 调试"听感问题"要先怀疑周期触发的副作用,再怀疑数据问题(仍然成立)
+- **机理归因要能被物理链路验证**——"DAC 重锁"听起来专业但经不起推敲:输出格式没变,锁什么?观察正确+归因错误的修复会把正确的技术(微速率伺服)错杀三个版本
+- 平滑机制本身没错,错的是用带伪影的实现(WSOLA)去做平滑
 
 ### 5.3 设备列表"幽灵条目"
 
@@ -374,6 +381,28 @@ scheduler.next(zoneId)
 4. 加同曲上限 `MAX_DRIFT_SEEKS = 10`——超此值停 seek（clock offset 或 audio.currentTime 严重异常时避免 seek 风暴制造更差体验）
 
 **教训**: "回退一段让音频自然追"听起来优雅,但核心假设是错的——音频追不上 `expectedSec` 因为它是严格按 1× 推进的移动靶。位移不等价于速率——追一个永远在动的目标,单次回退不会收敛。
+
+### 5.11 v5 播放平滑化:微速率伺服(借鉴成熟流媒体,2026-07-10)
+
+**动机**: v4 修掉反馈环后残留两个结构性问题:(1)每次修正仍是 seek——解码器 flush + 重定位必然产生 20-300ms 可闻断口,"修正即卡顿";(2)Safari `audio.currentTime` 每 ~250ms 才步进,单点噪声 ±125ms,2 样本平均也只能压到 ±60ms,贴着 100ms 阈值频繁误触发。
+
+**成熟系统对照**(Snapcast / Sonos / AirPlay 2 / Chromecast 群组的共同架构):
+
+| 技术 | 出处 | v5 落地 |
+|---|---|---|
+| 微速率伺服(P 控制) | Snapcast 的 sample stuffing / Sonos | 30-500ms 漂移: `rate = 1 + clamp(-drift/8s, ±1.5%)`,0.1% 量化步进 |
+| 纯重采样(无时间拉伸) | Snapcast resampler | `preservesPitch=false` + `webkitPreservesPitch=false`(伪影根除,见 §5.2 更正) |
+| 插值位置时钟 | 播放器字幕同步标准手法 | currentTime 变化记锚点 + monotonic×rate 外推,精度 ~5-10ms;外推上限 600ms 防 stall 虚推 |
+| seek 仅兜底 | 所有多房间系统 | 阈值 100→500ms;缓冲守卫 + 同曲上限保留 |
+| `seeked` 事件驱动冷却 | hls.js / Shaka | seek 完成 +300ms 即恢复检查,2s 只是兜底 |
+| stall 事件状态机 | hls.js(`waiting`/`playing`) | 诊断面板"卡顿次数"——与 seek 次数分开,一眼区分"修正型卡顿"vs"缓冲型卡顿" |
+| 输出延迟补偿 | AirPlay 2 | `ctx.outputLatency ?? baseLatency` 加进 expectedSec,对齐"扬声器出声"(蓝牙 100-300ms 设备受益) |
+
+**仿真验证**(P 律,0.5s tick,±20ms 测量噪声): 80ms 漂移 → ~8.5s 收敛、0 seek;300ms → ~23.5s 收敛、0 seek;600ms → 恰好 1 次 seek 后稳定。无振荡。
+
+**死区迟滞**: |drift| ≤ 30ms 时 rate 回正 1(避免永久微调抖动);30ms 以下的修正只是在追噪声。
+
+**一键回退**: `RATE_SERVO_ENABLED = false` 回到 v4 纯 seek 模式(阈值仍 500,如需老行为再把 `SEEK_THRESHOLD_MS` 调回 150)。现场若报告任何爆音,先关这个开关定位。
 
 ---
 

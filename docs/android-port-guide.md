@@ -172,29 +172,35 @@ setTimeout(delay: {
 
 ## 5. 漂移修正（必须复刻）
 
-每 `DRIFT_CHECK_MS = 1500ms` 一次：
+每 `DRIFT_CHECK_MS = 500ms` 一次：
 
 ```
 若不在播 / 冷却中 → 只上报 position，不修正
-actualSec   = player.currentPosition / 1000
-expectedSec = (serverNow() - startServerTime)/1000 + trackOffsetMs/1000
+actualSec   = player.currentPosition / 1000（web 端用插值位置时钟消 Safari 噪声；ExoPlayer currentPosition 本身够准）
+expectedSec = (serverNow() - startServerTime)/1000 + trackOffsetMs/1000（可加输出延迟补偿，见下）
 driftMs     = (actualSec - expectedSec) * 1000
 
-|drift| ≥ SEEK_THRESHOLD_MS（100）→ seek 到 expectedSec 并校准 startServerTime（漂移基线归零），冷却 SEEK_COOLDOWN_MS（2000ms）；同曲超过 MAX_DRIFT_SEEKS（10）次停 seek
-|drift| < SEEK_THRESHOLD_MS        → 不动（接受小漂移；人耳对 < 80ms 相位差不敏感）
+|drift| ≤ DRIFT_DEADBAND_MS（30）→ 死区：不动，速率回正 1.0
+30 < |drift| < SEEK_THRESHOLD_MS（500）→ 微速率伺服：speed = 1 + clamp(-driftSec/8, ±1.5%)，纯重采样模式，无断口
+|drift| ≥ SEEK_THRESHOLD_MS（500）→ 硬 seek 到 expectedSec（最后手段），冷却 SEEK_COOLDOWN_MS（2000ms）；同曲超过 MAX_DRIFT_SEEKS（10）次停 seek
 ```
 
-> **没有 playbackRate 微调路径** —— 这是 web 端踩过的坑：playbackRate 任何改变都会触发 DAC 重新锁定 LPCM（蓝牙/外置 DAC 上尤其明显），周期性触发就是"咯噔"声（断音）的根因。
+> **v3 更正（重要）**：web 端 v1 曾把"playbackRate 微调 → 蓝牙咯噔声"归因为"DAC 重新锁定 LPCM"——**归因是错的**（playbackRate 从不改变输出流采样率/格式，蓝牙链路 PCM 始终连续）。真实机理是 pitch 保持（WSOLA/Sonic 时间拉伸）的帧拼接伪影 + 速率在 1.0↔0.99x 之间硬切换。正确做法是**纯重采样模式的小步连续微调**——Snapcast/Sonos/AirPlay 多房间系统的标准方案，web 端 v3 已落地（`preservesPitch=false` + ±1.5% 钳制 + 30ms 死区）。
 >
-> ExoPlayer 等价：`setPlaybackParameters(PlaybackParameters(speed))` 会触发底层 audio renderer 重协商，同样会引发短暂静音或噪声。所以安卓端也**不要**用 `setPlaybackParameters` 做小漂移微调，只在漂移 ≥ 100ms 时调 `seekTo(expectedMs)` 并校准 `startServerTime`。
+> ExoPlayer 等价：`setPlaybackParameters(PlaybackParameters(speed, /*pitch=*/speed))` —— **pitch 跟随 speed = 纯重采样**，绕过 Sonic 时间拉伸，无伪影。**不要**用单参 `PlaybackParameters(speed)`（默认 pitch=1 会走 Sonic 时间拉伸，产生 web 端踩过的同款伪影）。速率钳制 ±1.5%，0.1% 步进量化，死区内回正 1.0。硬 seek 只在 ≥500ms 大错位时用 `seekTo(expectedMs)`。
+>
+> 输出延迟补偿（可选，对齐"扬声器出声"）：`AudioTrack#getLatency()` 或 AAudio timestamp API 拿输出延迟，加进 expectedSec——蓝牙音箱 100-300ms 延迟设备与有线设备的听感对齐靠这个（web 端用 `ctx.outputLatency`）。
 
 ### 参数
 
 | 常量 | 值 |
 |---|---|
-| `DRIFT_CHECK_MS` | 1500 |
-| `SEEK_THRESHOLD_MS` | 100（漂移 ≥ 此值才 seek） |
-| `SEEK_COOLDOWN_MS` | 2000（seek 后屏蔽漂移检查；v3 从 1000 拉长防 Safari currentTime 反馈环） |
+| `DRIFT_CHECK_MS` | 500（伺服修正周期） |
+| `DRIFT_DEADBAND_MS` | 30（死区：以下不修，速率回正） |
+| `RATE_SERVO_MAX` | 0.015（速率偏移上限 ±1.5% ≈26 音分） |
+| `RATE_SERVO_HORIZON_S` | 8（伺服收敛时间常数） |
+| `SEEK_THRESHOLD_MS` | 500（硬 seek 仅兜底大错位） |
+| `SEEK_COOLDOWN_MS` | 2000（seek 后屏蔽漂移检查；`onSeekProcessed`/`seeked` 事件可提前结束） |
 | `MAX_DRIFT_SEEKS` | 10（同曲漂移 seek 上限；超此值时钟或音频引擎异常，停修防卡顿） |
 
 ### 缓冲区健康度（v2 推荐，可选上报）
@@ -384,10 +390,14 @@ OkHttp 4.x 起 `pingInterval` 可设（如 `OkHttpClient.Builder().pingInterval(
 | `PING_INTERVAL_MS` | 2000 | 时钟同步轮询 | `web/sync.js` |
 | `PING_BURST_COUNT` | 5 | 收敛期连发数 | 同上 |
 | `PING_BURST_INTERVAL_MS` | 100 | 收敛期间隔 | 同上 |
-| `DRIFT_CHECK_MS` | 1500 | 漂移检查周期 | 同上 |
-| `SEEK_THRESHOLD_MS` | 100 | 漂移 ≥ 此值才 seek（替代旧的 30/200 双阈值） | 同上 |
-| `SEEK_COOLDOWN_MS` | 2000 | seek 后屏蔽漂移检查（v3 拉长防反馈环） | 同上 |
+| `DRIFT_CHECK_MS` | 500 | 伺服修正周期 | 同上 |
+| `DRIFT_DEADBAND_MS` | 30 | v3：死区，以下不修（追噪声无意义） | 同上 |
+| `RATE_SERVO_MAX` | 0.015 | v3：伺服速率偏移上限 ±1.5%（纯重采样 ≈26 音分封顶） | 同上 |
+| `RATE_SERVO_HORIZON_S` | 8 | v3：伺服收敛时间常数（P 控制器分母） | 同上 |
+| `SEEK_THRESHOLD_MS` | 500 | v3：硬 seek 仅兜底大错位（seek 必产生可闻断口） | 同上 |
+| `SEEK_COOLDOWN_MS` | 2000 | seek 后屏蔽漂移检查（seeked 事件提前到 +300ms） | 同上 |
 | `MAX_DRIFT_SEEKS` | 10 | 同曲漂移 seek 上限（超此值时钟或音频引擎异常，停修防卡顿） | 同上 |
+| `MIN_BUFFER_FOR_SEEK_MS` | 800 | 缓冲低于此值不 seek（starve 比不同步更差） | 同上 |
 | 重连间隔 | 1500 ms | WS 断线重连 | 同上 |
 | `STALE_MS` | 30000 | 服务端清理僵尸连接（>30s 无帧） | `server/ws.mjs` |
 | `SWEEP_INTERVAL_MS` | 5000 | 服务端扫描间隔 | 同上 |
