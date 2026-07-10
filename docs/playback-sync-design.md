@@ -132,13 +132,12 @@ projectedOffsetMs  = snap.trackOffsetMs + max(0, newStart - snap.startServerTime
   driftMs     = (actualSec - expectedSec) * 1000
 
   if |driftMs| ≥ 100:
-    audio.currentTime = expectedSec - 0.1  // 回退 100ms 让音频自然追上对齐点
-    冷却 1000ms(避免 seek 未完成时再次触发)
+    audio.currentTime = expectedSec  // 直接 seek 到预期位置
+    startServerTime校准             // 漂移基线归零，杜绝反馈环（v3 修复，见 §5.10）
+    冷却 2000ms(给 Safari audio.currentTime 稳定时间)
   else:
     不动(接受小漂移,人耳对 < 80ms 不敏感)
 ```
-
-**为什么回退 100ms 再 seek**: 直接跳到 `expectedSec` 时,跳跃是几百 ms 到几秒,听感是"扑通";回退 100ms 让音频自己推进到对齐点,听感是连续播放(只是稍微快了 100ms),几乎无感。
 
 **为什么接受 < 100ms 漂移**: 人耳对 < 80ms 相位差基本不敏感(< 50ms 完全无感,50-80ms 极少数人能察觉);且 100ms 是单方向漂移累积几分钟的结果,触发频率低。
 
@@ -225,8 +224,8 @@ mode = "loop-all"    → 队头 + 当前曲移到队尾
 | 最小 RTT 取数 | 3 | 同上 | 用于算 offset 中位数 |
 | `DRIFT_CHECK_MS` | 1500 | 同上 | 漂移检查周期 |
 | `SEEK_THRESHOLD_MS` | 100 | 同上 | 漂移 ≥ 此值才 seek |
-| `SEEK_BACK_MS` | 100 | 同上 | seek 前回退,让音频自然追 |
-| `SEEK_COOLDOWN_MS` | 1000 | 同上 | seek 后屏蔽漂移检查 |
+| `SEEK_COOLDOWN_MS` | 2000 | 同上 | seek 后屏蔽漂移检查（v3 拉长防反馈环） |
+| `MAX_DRIFT_SEEKS` | 10 | 同上 | 同曲漂移 seek 上限（v3：防 clock / currentTime 异常导致自激卡顿） |
 | `STALE_MS` | 30000 | `server/ws.mjs` | 清理僵尸连接(>30s 无帧) |
 | `SWEEP_INTERVAL_MS` | 5000 | 同上 | 服务端扫描间隔 |
 | `HEARTBEAT_INTERVAL_MS` | 10000 | 同上 | v2:协议层 WS ping 间隔(早发现半开连接) |
@@ -261,7 +260,7 @@ _startTrack(...)
 
 持续中:
    每 2s ping 一次 → 算 offset
-   每 1.5s drift 检查 → 若 |drift| ≥ 100ms 则 seek 回退 100ms
+   每 1.5s drift 检查 → 若 |drift| ≥ 100ms 则 seek 到预期位置 + 校准 startServerTime（v3 修复，见 §5.10）
 
 曲终:
    audio.onended = () => {}   // 不动
@@ -275,11 +274,13 @@ scheduler.next(zoneId)
 
 ## 5. 已解决的问题(经验沉淀)
 
-### 5.1 seek 跳跃的"扑通"声
+### 5.1 seek 跳跃的"扑通"声（v3 推翻，见 §5.10）
 
 **症状**: 大漂移时直接 `audio.currentTime = expectedSec`,跳跃几百 ms 到几秒,听感是"咯噔一下"。
 
-**解决**: seek 前回退 100ms,让音频自己推进到对齐点(`expectedSec - 0.1s` → 自然播到 `expectedSec`)。听感从"咯噔"变"微微加速"。
+**初版方案**（v1）: seek 前回退 100ms(`expectedSec - 0.1s`),让音频自己推进到对齐点。听感从"咯噔"变"微微加速"。
+
+**v3 发现**: 这个回退制造了**漂移修正反馈环**。数学推导: seek 到 `E − 0.1s` → 实际位置从 `E − 0.1` 开始推进 → 冷却 1s 后实际 `E + 0.9`、预期 `E + 1.0` → `|drift| = 100ms ≥ 100` → 再 seek → 循环。Safari 实测 76 秒累计 51 次 seek,缓冲 211s 完全健康——问题不在网络,在算法自激。详见 §5.10。
 
 ### 5.2 playbackRate 微调造成的周期性断音 ⭐本次根因⭐
 
@@ -359,6 +360,20 @@ scheduler.next(zoneId)
 **排查**: 应用层 `ping {t0}` / `pong {t0,t1}` 无法识别"TCP 半开"——应用层 ping 也依赖同一个 socket 读写,断了就一起发不出去。
 
 **解决**: 协议层 WS ping frame(opcode 0x9)由服务端 `hub.pingAll()` 每 10s 发一次,客户端用 OkHttp/Scarlet 自带 WS 库自动回 pong。`pingInterval` 和应用层 ping 是两件事,前者探测 TCP 活着,后者算 offset/RTT,语义不重叠。
+
+### 5.10 SEEK_BACK_MS 反馈环（v3 修复，2026-07-09）
+
+**症状**: Safari 播放时 seek 次数持续增长（76 秒到 51 次），音频不断"卡顿"（每次 seek 都有一瞬间静音），但诊断面板显示：缓冲 211.8s（完全健康）、MediaError 0、网络正常。Chrome 上不明显。
+
+**排查**: 数学推导（见 §5.1）。旧逻辑 seek 到 `expectedSec − 0.1s`（SEEK_BACK_MS=100），这个回退制造了一个永久 −100ms offset：seek 后实际位置 = E−0.1,冷却 1s 后实际 E+0.9、预期 E+1.0,|drift|=100 ≥ SEEK_THRESHOLD_MS(100),触发下一次 seek。这是标准的一阶反馈环——每次 cooldown 到期必然触发新 seek,与网络/缓冲/音频引擎无关。Safari 因 `audio.currentTime` 精度较低,略微加剧但根因是算法本身；Chrome 上 `currentTime` 精度高 10-20ms,刚好不触发。
+
+**v3 修复**:
+1. 去掉 SEEK_BACK_MS 回退——seek 到精确 `expectedSec`
+2. seek 后立即校准 `startServerTime = serverNow − (targetSec − trackOffsetMs/1000) × 1000`,漂移基线归零（下一次 drift 从 0 开始,不会自激）
+3. SEEK_COOLDOWN_MS 从 1000 → 2000（给 Safari `audio.currentTime` 更多稳定时间）
+4. 加同曲上限 `MAX_DRIFT_SEEKS = 10`——超此值停 seek（clock offset 或 audio.currentTime 严重异常时避免 seek 风暴制造更差体验）
+
+**教训**: "回退一段让音频自然追"听起来优雅,但核心假设是错的——音频追不上 `expectedSec` 因为它是严格按 1× 推进的移动靶。位移不等价于速率——追一个永远在动的目标,单次回退不会收敛。
 
 ---
 

@@ -1,6 +1,6 @@
 # 聚光广播 (Juguang) · 项目规范
 
-> **状态：🟡 暂停** | 最后更新：2026-06-30 | 功能完整，待现场部署验证
+> **状态：🟢 v2 已合并 main** | 最后更新：2026-07-09 | v2 同步优化 + code-review 修复 11 项 + 安卓客户端文档就绪 | 待 NAS 端 docker rebuild 验证上线
 
 > 园区多设备音频同步广播系统。一处选歌，多端 < 80ms 内同步播放。
 > 服务端零依赖（Node.js ≥ 22.5 内置 `node:sqlite`），前端零构建。
@@ -120,7 +120,7 @@ node -e "import('./server/scheduler.mjs').then(m => console.log('scheduler.mjs e
 
 1. 客户端每 2s ping 一次，取最近 10 次 RTT 最小 3 次的 offset 中位数作为时钟差
 2. 服务端 `play` 命令带 `startServerTime = now + effectivePreloadMs`（基础 1500ms，慢设备上报 `loadedMs` 后按 zone 内最慢 ×2 + 500 自动拉长），客户端换算到本地时刻精确 `start()`
-3. 每 1.5s 比对实际位置 vs 应播位置：|drift| < 100ms 接受，|drift| ≥ 100ms 回到期望位置前 100ms 让音频自然追。**没有 playbackRate 微调路径** —— playbackRate 改变触发 DAC 重新锁定（LPCM 重协商），蓝牙/外置 DAC 上周期性触发就是"咯噔"声的根因。
+3. 每 1.5s 比对实际位置 vs 应播位置：|drift| < 100ms 接受，|drift| ≥ 100ms 直接 seek 到预期位置并校准 `startServerTime`（漂移基线归零，杜绝反馈环）。**没有 playbackRate 微调路径** —— playbackRate 改变触发 DAC 重新锁定（LPCM 重协商），蓝牙/外置 DAC 上周期性触发就是"咯噔"声的根因。
 4. 客户端 `loadedmetadata` 就绪时上报 `reportLoaded { loadedMs }`，服务端缓存 `Map<deviceId, ms>`，`play()` 取 zone 内最慢动态调整
 5. 服务端每 `HEARTBEAT_INTERVAL_MS = 10s` 发 WS 协议层 ping frame，客户端自动回 pong；比 sweep（30s）更早发现半开连接
 
@@ -133,6 +133,8 @@ node -e "import('./server/scheduler.mjs').then(m => console.log('scheduler.mjs e
 - `web/sync.js` `PING_BURST_INTERVAL_MS`（默认 100，收敛期间隔）
 - `web/sync.js` `DRIFT_CHECK_MS`（默认 1500，更小更平滑但 CPU 多）
 - `web/sync.js` `SEEK_THRESHOLD_MS`（默认 100，漂移超过才 seek）
+- `web/sync.js` `SEEK_COOLDOWN_MS`（默认 2000，seek 后冷却）
+- `web/sync.js` `MAX_DRIFT_SEEKS`（默认 10，同曲 seek 上限防反馈环）
 
 ## 6. 验证流程
 

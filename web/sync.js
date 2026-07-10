@@ -3,8 +3,8 @@ const PING_BURST_COUNT = 5;
 const PING_BURST_INTERVAL_MS = 100;
 const DRIFT_CHECK_MS = 1500;      // 漂移检查周期
 const SEEK_THRESHOLD_MS = 100;    // 单一阈值：<100ms 接受，≥100ms seek
-const SEEK_BACK_MS = 100;         // seek 前回退：让音频自然推进补齐对齐点
-const SEEK_COOLDOWN_MS = 1000;    // seek 后冷却：避免 seek 风暴
+const SEEK_COOLDOWN_MS = 2000;    // seek 后冷却：给 Safari audio.currentTime 稳定时间（≥2×DRIFT_CHECK_MS 防反馈环）
+const MAX_DRIFT_SEEKS = 10;       // 同曲漂移 seek 上限：超此值 clock offset 或 currentTime 严重异常，停 seek 等下一首
 const MAX_ERROR_RETRIES = 3;      // audio.onerror 连续失败 N 次后回滚 isPlaying（避免 silent stuck）
 const MAX_RECONNECT_BACKOFF_MS = 30000; // WS 重连退避上限（1.5s → 3s → 6s → 12s → 24s → 30s 封顶）
 const HEARTBEAT_GRACE_MS = 12000; // 服务端应用层心跳最大间隔：超此值视作服务端异常，触发主动重连
@@ -63,6 +63,7 @@ export class SyncClient {
     this.heartbeatTimer = null; // 应用层心跳超时 watcher：pong 间隔超 HEARTBEAT_GRACE_MS 主动重连
     this._lastPongAt = 0;       // 最近一次收到 pong 的 monotonic 时间戳
     this._reconnectAttempt = 0; // WS 重连退避计数（每次 onclose 自增）
+    this._driftSeeksThisTrack = 0; // 当前曲目漂移 seek 计数（同曲超 MAX_DRIFT_SEEKS 停 seek）
     // 两层音量：master 来自服务端下发（admin 调的），local 是用户本机拉杆（0-1 倍率）
     this.masterVolume = 1;
     this.localVolume = 1;
@@ -357,6 +358,8 @@ export class SyncClient {
       this._update({ trackTitle: fname });
       // 新曲重置 error retry 计数：上一曲的网络抖动不应污染新曲的容错
       this._errorRetries = 0;
+      // 新曲重置漂移 seek 计数：上一曲的累计 seek 不应限制新曲的漂移修正
+      this._driftSeeksThisTrack = 0;
     } else if (this.currentTrackId !== trackId) {
       this.currentTrackId = trackId;
     }
@@ -464,17 +467,37 @@ export class SyncClient {
 
     const abs = Math.abs(driftMs);
     if (abs >= SEEK_THRESHOLD_MS) {
-      // 回退 SEEK_BACK_MS 再 seek，让音频自然推进补齐对齐点（避免"扑通"声）。
-      // 没有 playbackRate 微调路径：playbackRate 改变会触发 DAC 重新锁定 LPCM，
-      // 蓝牙/外置 DAC 上周期性触发造成可闻"咯噔"声——那是断音的根因。
-      // 接受 < 100ms 的小漂移（人耳对 < 80ms 相位差不敏感），seek 只在漂移累积到阈值时触发。
+      // 同曲 seek 上限：超此值说明 clock offset 或 audio.currentTime 严重异常（Safari 偶发），
+      // 继续 seek 只会制造更多卡顿。停 seek，只在诊断面板显示 drift 供排查。
+      if (this._driftSeeksThisTrack >= MAX_DRIFT_SEEKS) {
+        this._update({ seekCount: (this.status.seekCount ?? 0) + 1 });
+        return;
+      }
+      this._driftSeeksThisTrack++;
+
+      // v2 关键修复：不再回退 SEEK_BACK_MS。旧逻辑 seek 到 expectedSec − 100ms，
+      // 但这种"让音频自然追"的做法制造了一个永久 −100ms offset——每次 cooldown 到期
+      // 后 |drift| 恰好 ≥ 100ms，触发下一个 seek，形成自激反馈环。
+      // 实测 Safari 上 seek 51 次 / 76 秒，缓冲 211s 完全健康——问题不在网络，在算法。
+      //
+      // 正确做法：seek 到精确 expectedSec，然后立刻校准 startServerTime，
+      // 让 expectedSec 从此刻重新基于实际位置计算。这样 seek 后的 drift 基线为 0，
+      // 后续只在真实时钟漂移或 playbackRate 差异时才触发 seek（而非自激）。
       this._seekCooldownUntil = _now() + SEEK_COOLDOWN_MS;
       const newSeekCount = (this.status.seekCount ?? 0) + 1;
-      this._update({ seekCount: newSeekCount }); // 走 _update 广播给 listener（之前直接改 status 不刷新）
+      const targetSec = expectedSec;
+      this._update({ seekCount: newSeekCount });
       _log(`seek #${newSeekCount}: drift=${Math.round(driftMs)}ms audio=${actualSec.toFixed(2)}s expected=${expectedSec.toFixed(2)}s bufferedAhead=${this._bufferAheadMs()}ms`);
       try {
-        this.audio.currentTime = Math.max(0, expectedSec - SEEK_BACK_MS / 1000);
+        this.audio.currentTime = Math.max(0, targetSec);
       } catch {}
+
+      // 校准 startServerTime：让 expectedSec == audio.currentTime 在此刻成立。
+      // 不依赖 audio.currentTime（Safari seek 后可能还没稳定），用请求的 targetSec。
+      // expectedSec = (serverNow - startServerTime)/1000 + trackOffsetMs/1000
+      // → startServerTime = serverNow - (targetSec - trackOffsetMs/1000) * 1000
+      const serverNow = this._serverNow();
+      this.startServerTime = serverNow - (targetSec - this.trackOffsetMs / 1000) * 1000;
     }
   }
 

@@ -180,13 +180,13 @@ actualSec   = player.currentPosition / 1000
 expectedSec = (serverNow() - startServerTime)/1000 + trackOffsetMs/1000
 driftMs     = (actualSec - expectedSec) * 1000
 
-|drift| ≥ SEEK_THRESHOLD_MS（100）→ seek 到 expectedSec - SEEK_BACK_MS/1000（回退 100ms 让音频自然追上对齐点），冷却 SEEK_COOLDOWN_MS（1000ms）
+|drift| ≥ SEEK_THRESHOLD_MS（100）→ seek 到 expectedSec 并校准 startServerTime（漂移基线归零），冷却 SEEK_COOLDOWN_MS（2000ms）；同曲超过 MAX_DRIFT_SEEKS（10）次停 seek
 |drift| < SEEK_THRESHOLD_MS        → 不动（接受小漂移；人耳对 < 80ms 相位差不敏感）
 ```
 
 > **没有 playbackRate 微调路径** —— 这是 web 端踩过的坑：playbackRate 任何改变都会触发 DAC 重新锁定 LPCM（蓝牙/外置 DAC 上尤其明显），周期性触发就是"咯噔"声（断音）的根因。
 >
-> ExoPlayer 等价：`setPlaybackParameters(PlaybackParameters(speed))` 会触发底层 audio renderer 重协商，同样会引发短暂静音或噪声。所以安卓端也**不要**用 `setPlaybackParameters` 做小漂移微调，只在漂移 ≥ 100ms 时调 `seekTo(expectedMs - 100)`。
+> ExoPlayer 等价：`setPlaybackParameters(PlaybackParameters(speed))` 会触发底层 audio renderer 重协商，同样会引发短暂静音或噪声。所以安卓端也**不要**用 `setPlaybackParameters` 做小漂移微调，只在漂移 ≥ 100ms 时调 `seekTo(expectedMs)` 并校准 `startServerTime`。
 
 ### 参数
 
@@ -194,8 +194,8 @@ driftMs     = (actualSec - expectedSec) * 1000
 |---|---|
 | `DRIFT_CHECK_MS` | 1500 |
 | `SEEK_THRESHOLD_MS` | 100（漂移 ≥ 此值才 seek） |
-| `SEEK_BACK_MS` | 100（seek 前回退，让音频自然追） |
-| `SEEK_COOLDOWN_MS` | 1000（seek 后屏蔽漂移检查） |
+| `SEEK_COOLDOWN_MS` | 2000（seek 后屏蔽漂移检查；v3 从 1000 拉长防 Safari currentTime 反馈环） |
+| `MAX_DRIFT_SEEKS` | 10（同曲漂移 seek 上限；超此值时钟或音频引擎异常，停修防卡顿） |
 
 ### 缓冲区健康度（v2 推荐，可选上报）
 
@@ -386,8 +386,8 @@ OkHttp 4.x 起 `pingInterval` 可设（如 `OkHttpClient.Builder().pingInterval(
 | `PING_BURST_INTERVAL_MS` | 100 | 收敛期间隔 | 同上 |
 | `DRIFT_CHECK_MS` | 1500 | 漂移检查周期 | 同上 |
 | `SEEK_THRESHOLD_MS` | 100 | 漂移 ≥ 此值才 seek（替代旧的 30/200 双阈值） | 同上 |
-| `SEEK_BACK_MS` | 100 | seek 前回退，让音频自然追 | 同上 |
-| `SEEK_COOLDOWN_MS` | 1000 | seek 后屏蔽漂移检查 | 同上 |
+| `SEEK_COOLDOWN_MS` | 2000 | seek 后屏蔽漂移检查（v3 拉长防反馈环） | 同上 |
+| `MAX_DRIFT_SEEKS` | 10 | 同曲漂移 seek 上限（超此值时钟或音频引擎异常，停修防卡顿） | 同上 |
 | 重连间隔 | 1500 ms | WS 断线重连 | 同上 |
 | `STALE_MS` | 30000 | 服务端清理僵尸连接（>30s 无帧） | `server/ws.mjs` |
 | `SWEEP_INTERVAL_MS` | 5000 | 服务端扫描间隔 | 同上 |
