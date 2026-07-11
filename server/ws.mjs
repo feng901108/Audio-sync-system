@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "./db.mjs";
-import { snapshot, PRELOAD_MS, recordLoadedMs } from "./scheduler.mjs";
+import { snapshot, PRELOAD_MS, recordLoadedMs, snapshotForSync } from "./scheduler.mjs";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const DEFAULT_ZONE = 1;
@@ -11,6 +11,10 @@ export const SWEEP_INTERVAL_MS = 5000;
 // 应用层心跳间隔：服务端主动发 ping frame（WS 协议层 0x9），浏览器自动回 pong frame，
 // 不污染应用消息流。比纯靠 lastSeenAt 早发现"半开"连接（客户端实际断了但 TCP 还没 RST）
 export const HEARTBEAT_INTERVAL_MS = 10000;
+// v4: sync tick 广播间隔。Server 每 ~200ms 向活跃 zone 广播一次 `{type:"sync", serverNow, positionMs}`
+// 作为位置真理源；client 用最新 tick 作锚点 + monotonic 外推得到 expected position。
+// 200ms 配合 DRIFT_CHECK_MS=500ms 已足够；抖动 ±25ms 防止与浏览器 event loop 相位锁。
+export const SYNC_TICK_INTERVAL_MS = 200;
 
 export function isWebSocketUpgrade(req) {
   return (
@@ -141,7 +145,11 @@ class WSConn {
 }
 
 class Hub {
-  constructor() { this.conns = new Map(); } // deviceId -> { conn, zoneId }
+  constructor() {
+    this.conns = new Map(); // deviceId -> { conn, zoneId }
+    this._syncTimer = null;
+    this._syncScheduler = null;
+  }
 
   attach(deviceId, conn, zoneId) {
     const existing = this.conns.get(deviceId);
@@ -231,6 +239,46 @@ class Hub {
     for (const e of this.conns.values()) if (e.conn.send(msg)) n++;
     return n;
   }
+
+  // v4: 启动 sync tick 周期性广播（Phase A.0: 只 log；Phase A: 真广播 type:"sync"）
+  startSyncTicks(scheduler, intervalMs = SYNC_TICK_INTERVAL_MS) {
+    if (this._syncTimer) return; // 防止重复启动
+    this._syncScheduler = scheduler;
+    const tick = () => {
+      try {
+        const zones = scheduler.listZones?.() ?? [];
+        for (const z of zones) {
+          const snap = scheduler.snapshotForSync(z.id);
+          if (!snap) continue;
+          // 零在线设备 + 暂停 zone 跳过（late-join 走 register handler 单独发 sync）
+          if (this.onlineDeviceIdsInZone(z.id).length === 0) continue;
+          this.broadcastToZone(z.id, {
+            type: "sync",
+            zoneId: z.id,
+            trackId: snap.trackId,
+            positionMs: snap.positionMs,
+            isPlaying: snap.isPlaying,
+            durationMs: snap.durationMs,
+            serverNow: Date.now(),
+          });
+        }
+      } catch (e) {
+        console.error("[sync-tick] error:", e);
+      }
+    };
+    this._syncTimer = setInterval(tick, intervalMs);
+    this._syncTimer.unref?.();
+    console.log(`[sync-tick] started, interval=${intervalMs}ms`);
+  }
+
+  stopSyncTicks() {
+    if (this._syncTimer) {
+      clearInterval(this._syncTimer);
+      this._syncTimer = null;
+      this._syncScheduler = null;
+      console.log("[sync-tick] stopped");
+    }
+  }
 }
 
 export const hub = new Hub();
@@ -267,8 +315,9 @@ export function handleUpgrade(req, socket) {
       conn.send({ type: "setVolume", volume: Number(dev.volume) });
       const snap = snapshot(conn.zoneId);
       if (snap.isPlaying && snap.track && snap.startServerTime) {
-        // 中途加入：计算此刻的投影位置，给新设备一个 fresh startServerTime
-        const newStart = Date.now() + PRELOAD_MS;
+        // 中途加入：v4 改用 now-relative anchor（Date.now()，不再 + PRELOAD_MS）
+        // late-join 客户端通常已在加载中，给 future anchor 反而导致 audio.play() 等过久
+        const newStart = Date.now();
         const projectedOffsetMs = snap.trackOffsetMs + Math.max(0, newStart - snap.startServerTime);
         conn.send({
           type: "play",
@@ -277,8 +326,21 @@ export function handleUpgrade(req, socket) {
           trackUrl: snap.track.url,
           durationMs: snap.track.durationMs,
           startServerTime: newStart,
-          trackOffsetMs: projectedOffsetMs,
+          trackOffsetMs: Math.max(0, projectedOffsetMs),
         });
+        // v4: 立即补发一个 sync tick 拿到 tick anchor（不等 200ms 节拍）
+        const syncSnap = snapshotForSync(conn.zoneId);
+        if (syncSnap) {
+          conn.send({
+            type: "sync",
+            zoneId: conn.zoneId,
+            trackId: syncSnap.trackId,
+            positionMs: syncSnap.positionMs,
+            isPlaying: syncSnap.isPlaying,
+            durationMs: syncSnap.durationMs,
+            serverNow: Date.now(),
+          });
+        }
       }
       return;
     }

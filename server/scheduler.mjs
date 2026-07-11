@@ -14,6 +14,30 @@ export function recordLoadedMs(deviceId, ms) {
   loadedMsByDevice.set(deviceId, ms);
 }
 
+// v4: 给 sync tick 用的轻量 snapshot。读 playback_state 行 + join tracks 拿 durationMs（200ms/次 主键 join 可忽略）
+// 返回 null 表示 zone 没有在播曲目（不 tick 空 zone，省广播）
+export function snapshotForSync(zoneId) {
+  const s = getRow(zoneId);
+  if (!s || !s.track_id) return null;
+  const t = getTrack(s.track_id);
+  const startServerTime = Number(s.start_server_time ?? 0);
+  const isPlaying = !!s.is_playing;
+  const offsetMs = Number(s.track_offset_ms ?? 0);
+  // v4 tick 公式：positionMs = offset + (now - startServerTime)，但仅在播放中推进
+  // Phase A 改 start_server_time = Date.now() 后此处即为「当前播放位置」
+  const positionMs = isPlaying && startServerTime > 0
+    ? Math.max(0, offsetMs + (Date.now() - startServerTime))
+    : Math.max(0, offsetMs);
+  return {
+    zoneId: Number(s.zone_id),
+    trackId: s.track_id,
+    positionMs: Math.round(positionMs),
+    isPlaying,
+    durationMs: t ? Number(t.duration_ms) : 0,
+    serverNow: Date.now(),
+  };
+}
+
 // 按当前 zone 内活跃设备的最大 loadedMs 决定本次 play 预留时间：
 // loadedMs 越大的设备 metadata 加载越慢，预留必须留够 buffer × 2 + 500ms 余量
 export function getEffectivePreloadMs(zoneId) {
@@ -83,7 +107,12 @@ export function play(zoneId, trackId, offsetMs = 0) {
   if (!t) return { ok: false, error: "曲目不存在" };
   // 动态 PRELOAD_MS：按 zone 内最慢设备的 metadata 加载耗时拉长，确保所有设备都有足够 buffer 时间
   const effectivePreload = getEffectivePreloadMs(zoneId);
-  const startServerTime = Date.now() + effectivePreload;
+  // v4: 所有时间锚点统一为 now-relative（不再 + effectivePreload）
+  //   - tickAnchor (= startServerTime): 同时作为 DB 字段（tick 公式用）和 broadcast 字段（客户端参考）
+  //   - 客户端 v3 行为：loadedmetadata 触发 begin() → audio.play() 在 localTargetMs 触发
+  //     当 localTargetMs = past，audio.play() 立即触发（loadedmetadata 已发生，无问题）
+  //   - 客户端需要 PRELOAD_MS 时间加载音频，但客户端自己管理：loadedmetadata 完成前 begin() 不被调用
+  const startServerTime = Date.now();
   db.prepare(`UPDATE playback_state
     SET track_id = ?, start_server_time = ?, track_offset_ms = ?,
         is_playing = 1, updated_at = ? WHERE zone_id = ?`)
@@ -98,6 +127,17 @@ export function play(zoneId, trackId, offsetMs = 0) {
     startServerTime,
     trackOffsetMs: offsetMs,
   });
+  // v4: 立即 broadcast 一个 sync tick（不等 200ms 节拍），让客户端第一时间拿到 tick anchor
+  _hub?.broadcastToZone(zoneId, {
+    type: "sync",
+    zoneId,
+    trackId: t.id,
+    positionMs: Math.max(0, offsetMs),
+    isPlaying: true,
+    durationMs: Number(t.duration_ms),
+    serverNow: Date.now(),
+  });
+  // scheduleAdvance 改用 startServerTime = Date.now() 算 remain — 真实剩余时长 = duration - offset - elapsed
   scheduleAdvance(zoneId, Number(t.duration_ms), startServerTime, offsetMs);
   return { ok: true, startServerTime };
 }
@@ -106,11 +146,22 @@ export function pause(zoneId = DEFAULT_ZONE) {
   const s = getRow(zoneId);
   if (!s.track_id || !s.is_playing) return { ok: true };
   const atServerTime = Date.now() + 200;
+  // v4: start_server_time 是 tick anchor（now-relative），算 playedMs 用 tick anchor
   const playedMs = Number(s.track_offset_ms) + (atServerTime - Number(s.start_server_time ?? atServerTime));
   db.prepare(`UPDATE playback_state SET is_playing = 0, track_offset_ms = ?, start_server_time = NULL, updated_at = ? WHERE zone_id = ?`)
     .run(Math.max(0, playedMs), Date.now(), zoneId);
   clearAdvance(zoneId);
   _hub?.broadcastToZone(zoneId, { type: "pause", zoneId, atServerTime });
+  // v4: 立即 broadcast 一个 sync tick，告知 isPlaying=false + positionMs 冻结
+  _hub?.broadcastToZone(zoneId, {
+    type: "sync",
+    zoneId,
+    trackId: s.track_id,
+    positionMs: Math.max(0, playedMs),
+    isPlaying: false,
+    durationMs: 0,
+    serverNow: Date.now(),
+  });
   return { ok: true };
 }
 

@@ -4,7 +4,7 @@ import { resolve, extname, dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { db } from "./db.mjs";
 import { findAdminByUsername, verifyPassword, createSession, getSession, destroySession, adminCount } from "./auth.mjs";
-import { handleUpgrade, hub, STALE_MS, SWEEP_INTERVAL_MS, HEARTBEAT_INTERVAL_MS } from "./ws.mjs";
+import { handleUpgrade, hub, STALE_MS, SWEEP_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, SYNC_TICK_INTERVAL_MS } from "./ws.mjs";
 import {
   setHub, snapshot, play, pause, resume, stop, seek, next, prev,
   enqueue, clearQueue, setQueue, setMode,
@@ -12,6 +12,7 @@ import {
   listPlaylists, getPlaylist, createPlaylist, renamePlaylist, deletePlaylist,
   listPlaylistTracks, addTracksToPlaylist, removeTrackFromPlaylist,
   loadPlaylistToQueue,
+  snapshotForSync,
 } from "./scheduler.mjs";
 import { parseMultipart } from "./multipart.mjs";
 import { probeAudioDuration } from "./audio-probe.mjs";
@@ -626,4 +627,9 @@ server.listen(PORT, HOST, () => {
   setInterval(() => {
     hub.pingAll();
   }, HEARTBEAT_INTERVAL_MS).unref();
+  // v4: sync tick 周期性广播（Phase A.0 仅 log；Phase A 改成真广播）
+  // 通过 env JUGUANG_SYNC_V4_ENABLED=0 可一键关闭（Phase C 后生效；A.0/A 阶段只是 log + broadcast）
+  if (process.env.JUGUANG_SYNC_V4_ENABLED !== "0") {
+    hub.startSyncTicks({ listZones, snapshotForSync }, SYNC_TICK_INTERVAL_MS);
+  }
 });
