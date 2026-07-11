@@ -74,6 +74,13 @@ export class SyncClient {
     //   锚点 + 外推可把位置精度从 ±125ms 提到 ~5-10ms（视频播放器字幕同步的标准手法）
     this._seekStartedAt = 0;    // seeking→seeked 计时：测 seek 耗时 + 区分 seek 型 waiting
     this._stallStartAt = 0;     // waiting→playing 计时：真缓冲卡顿（网络 starve）
+    // v4: sync tick 接收状态（仅诊断，Phase C 才用于 drift 公式）
+    this.lastSyncReceivedAt = null;   // monotonic _now() 时刻
+    this.lastSyncPositionMs = 0;       // 最近一次 server tick 的 positionMs
+    this.lastSyncServerNow = 0;       // 最近一次 server tick 的 serverNow
+    this._syncTickCount = 0;          // 累计收到的 tick 数
+    this._ticksDropped = 0;           // 距上一个 tick > 3 × lastIntervalMs 的次数
+    this._lastSyncIntervalMs = 0;     // 最近一次 tick 间隔
     // 两层音量：master 来自服务端下发（admin 调的），local 是用户本机拉杆（0-1 倍率）
     this.masterVolume = 1;
     this.localVolume = 1;
@@ -91,6 +98,10 @@ export class SyncClient {
       mediaErrorCode: 0,  // audio.error?.code：0=OK, 1=ABORTED, 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED
       needsUserGesture: false,  // iOS: autoplay 被拒需用户点一下恢复
       isIos: IS_IOS,     // 用于调试 UI 差异化提示
+      // v4: sync tick 诊断字段（Phase B 写入，Phase C 用于 drift 公式）
+      syncTicksReceived: 0,
+      lastSyncIntervalMs: 0,
+      ticksDropped: 0,
     };
   }
 
@@ -237,6 +248,7 @@ export class SyncClient {
         name: this.deviceName,
         kind: this.kind,
         zoneId: this.zoneId,
+        supportsSyncTicks: true,  // v4: 声明支持 sync tick，server 会每 ~200ms 广播 type:"sync"
       }));
       this._startPing();
       this._startDrift();
@@ -344,6 +356,28 @@ export class SyncClient {
 
   _handle(msg) {
     switch (msg.type) {
+      case "sync": {
+        // v4: 接收 server tick，仅存状态不用于 drift（Phase C 才切换公式）
+        // 首 tick jitter 大，故不立刻用；_syncTickCount >= 2 之后才视为有效
+        const now = _now();
+        const interval = this.lastSyncReceivedAt != null
+          ? Math.round(now - this.lastSyncReceivedAt) : 0;
+        // tick drop 检测：间隔 > 3 × 上一次 interval（或 600ms）
+        if (this._lastSyncIntervalMs > 0 && interval > Math.max(this._lastSyncIntervalMs * 3, 600)) {
+          this._ticksDropped++;
+        }
+        this.lastSyncReceivedAt = now;
+        this.lastSyncPositionMs = Number(msg.positionMs ?? 0);
+        this.lastSyncServerNow = Number(msg.serverNow ?? 0);
+        if (interval > 0) this._lastSyncIntervalMs = interval;
+        this._syncTickCount++;
+        this._update({
+          syncTicksReceived: this._syncTickCount,
+          lastSyncIntervalMs: this._lastSyncIntervalMs,
+          ticksDropped: this._ticksDropped,
+        });
+        return;
+      }
       case "pong": {
         const t2 = _now();
         const rtt = t2 - msg.t0;

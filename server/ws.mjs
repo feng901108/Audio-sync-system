@@ -54,6 +54,7 @@ class WSConn {
     this.handlers = { message: [], close: [] };
     this.deviceId = null;
     this.zoneId = DEFAULT_ZONE;
+    this.supportsSyncTicks = false;  // v4: 客户端 register 时通过 supportsSyncTicks:true 开启
     this.lastSeenAt = Date.now();
 
     socket.on("data", (chunk) => {
@@ -215,6 +216,15 @@ class Hub {
     return n;
   }
 
+  // v4: 只广播给 supportsSyncTicks=true 的连接（避免 v3 客户端收到冗余 sync 消息）
+  broadcastSyncToZone(zoneId, msg) {
+    let n = 0;
+    for (const e of this.conns.values()) {
+      if (e.zoneId === zoneId && e.conn.supportsSyncTicks && e.conn.send(msg)) n++;
+    }
+    return n;
+  }
+
   // 协议层心跳：向每个连接发空 ping frame（WS opcode 0x9），浏览器自动回 pong frame
   // （见 WSConn.parse 中 opcode === 0x9 处理）。失败说明半开，主动 detach。
   pingAll() {
@@ -241,9 +251,11 @@ class Hub {
   }
 
   // v4: 启动 sync tick 周期性广播（Phase A.0: 只 log；Phase A: 真广播 type:"sync"）
+  // 用 setTimeout + 随机抖动（±25ms）替代 setInterval，避免与浏览器 event loop 相位锁
   startSyncTicks(scheduler, intervalMs = SYNC_TICK_INTERVAL_MS) {
     if (this._syncTimer) return; // 防止重复启动
     this._syncScheduler = scheduler;
+    let nextDelay = intervalMs;
     const tick = () => {
       try {
         const zones = scheduler.listZones?.() ?? [];
@@ -252,7 +264,7 @@ class Hub {
           if (!snap) continue;
           // 零在线设备 + 暂停 zone 跳过（late-join 走 register handler 单独发 sync）
           if (this.onlineDeviceIdsInZone(z.id).length === 0) continue;
-          this.broadcastToZone(z.id, {
+          this.broadcastSyncToZone(z.id, {
             type: "sync",
             zoneId: z.id,
             trackId: snap.trackId,
@@ -265,10 +277,13 @@ class Hub {
       } catch (e) {
         console.error("[sync-tick] error:", e);
       }
+      // 计划下一次：基础 200ms + ±25ms 随机（每次 fire 后重排，不能用 setInterval）
+      nextDelay = intervalMs + (Math.random() - 0.5) * 50;
+      this._syncTimer = setTimeout(tick, nextDelay);
     };
-    this._syncTimer = setInterval(tick, intervalMs);
+    this._syncTimer = setTimeout(tick, nextDelay);
     this._syncTimer.unref?.();
-    console.log(`[sync-tick] started, interval=${intervalMs}ms`);
+    console.log(`[sync-tick] started, base interval=${intervalMs}ms (±25ms jitter)`);
   }
 
   stopSyncTicks() {
@@ -308,6 +323,7 @@ export function handleUpgrade(req, socket) {
       const reqZone = Number(msg.zoneId);
       const zoneId = Number.isInteger(reqZone) && reqZone > 0 ? reqZone : DEFAULT_ZONE;
       const dev = ensureDevice(msg.deviceId, msg.name, msg.kind ?? "web", zoneId);
+      conn.supportsSyncTicks = !!msg.supportsSyncTicks;  // v4: 标记是否接收 sync tick
       conn.deviceId = dev.id;
       conn.zoneId = dev.zoneId ?? zoneId;
       hub.attach(dev.id, conn, conn.zoneId);
@@ -329,17 +345,20 @@ export function handleUpgrade(req, socket) {
           trackOffsetMs: Math.max(0, projectedOffsetMs),
         });
         // v4: 立即补发一个 sync tick 拿到 tick anchor（不等 200ms 节拍）
-        const syncSnap = snapshotForSync(conn.zoneId);
-        if (syncSnap) {
-          conn.send({
-            type: "sync",
-            zoneId: conn.zoneId,
-            trackId: syncSnap.trackId,
-            positionMs: syncSnap.positionMs,
-            isPlaying: syncSnap.isPlaying,
-            durationMs: syncSnap.durationMs,
-            serverNow: Date.now(),
-          });
+        // 只对 supportsSyncTicks=true 的连接发，避免 v3 客户端收到冗余消息
+        if (conn.supportsSyncTicks) {
+          const syncSnap = snapshotForSync(conn.zoneId);
+          if (syncSnap) {
+            conn.send({
+              type: "sync",
+              zoneId: conn.zoneId,
+              trackId: syncSnap.trackId,
+              positionMs: syncSnap.positionMs,
+              isPlaying: syncSnap.isPlaying,
+              durationMs: syncSnap.durationMs,
+              serverNow: Date.now(),
+            });
+          }
         }
       }
       return;
