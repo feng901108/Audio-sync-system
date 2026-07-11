@@ -369,6 +369,13 @@ export class SyncClient {
     this._softDriftMode = false;
     // disconnect 时清理 visibility 监听，避免重连累积（_visHandler 在 connect() 中重挂）
     if (this._visHandler) { document.removeEventListener("visibilitychange", this._visHandler); this._visHandler = null; }
+    // v4 gap sweep fix: disconnect 时重置 tick 状态 + NTP 缓冲，防重连后状态污染
+    this.lastSyncReceivedAt = null;
+    this._syncTickCount = 0;
+    this._lastSyncIntervalMs = 0;
+    this._syncIsPlaying = false;
+    this.clockSamples = [];
+    this.isPlaying = false;
   }
 
   _clockOffset() {
