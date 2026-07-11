@@ -81,6 +81,9 @@ export class SyncClient {
     this._syncTickCount = 0;          // 累计收到的 tick 数
     this._ticksDropped = 0;           // 距上一个 tick > 3 × lastIntervalMs 的次数
     this._lastSyncIntervalMs = 0;     // 最近一次 tick 间隔
+    // v4 (Phase C): drift 公式开关（escape hatch via localStorage "juguang.useSyncTicks" = "0"）
+    this.useSyncTicks = localStorage.getItem("juguang.useSyncTicks") !== "0";
+    this._softDriftMode = false;      // tab 切回前台 2s 内：SEEK_THRESHOLD ×3 软收敛
     // 两层音量：master 来自服务端下发（admin 调的），local 是用户本机拉杆（0-1 倍率）
     this.masterVolume = 1;
     this.localVolume = 1;
@@ -271,6 +274,19 @@ export class SyncClient {
       }, delay);
     };
     ws.onerror = () => { try { ws.close(); } catch {} }; // 闭包 ws，不用 this.ws
+
+    // v4 (Phase C): tab 切回前台 2s 内启用软 SEEK_THRESHOLD（×3），让后台累积的 drift
+    // 通过速率伺服软收敛而非一次性硬 seek。setTimeout 2s 后自动恢复硬阈值。
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        this._softDriftMode = true;
+        if (this._softDriftTimer) clearTimeout(this._softDriftTimer);
+        this._softDriftTimer = setTimeout(() => {
+          this._softDriftMode = false;
+          this._softDriftTimer = null;
+        }, 2000);
+      }
+    });
   }
 
   // iOS: 监听任意用户手势（点击/触摸/按键）来解锁 AudioContext 和 autoplay
@@ -539,6 +555,19 @@ export class SyncClient {
     this._update({ isPlaying: false, mediaErrorCode: this.audio?.error?.code ?? 0 });
   }
 
+  // v4 (Phase C): 基于最新 sync tick + monotonic 外推得到 expected position
+  // 返回 null 表示回退到 v3 公式（未启用 / 静默超时 / 第二个 tick 未到）
+  _expectedPositionSec() {
+    if (!this.useSyncTicks) return null;
+    if (this.lastSyncReceivedAt == null) return null;
+    // 等第二个 tick 才启用：第一个 tick jitter 大，可能 anchor 到不稳定的状态
+    if (this._syncTickCount < 2) return null;
+    // 5s 内没收到 sync 视为连接问题（server 暂停广播 / 网络断），回退 v3
+    // 5s 比单 tick 间隔 200ms 大很多，给偶尔的 jitter/loss 留余量
+    if (_now() - this.lastSyncReceivedAt > 5000) return null;
+    return this.lastSyncPositionMs / 1000 + (_now() - this.lastSyncReceivedAt) / 1000;
+  }
+
   _drift() {
     if (!this.audio || !this.isPlaying) {
       this._update({
@@ -561,7 +590,12 @@ export class SyncClient {
     // 把各自的延迟加进预期位置 → 对齐"扬声器出声"而非"解码位置"。
     // Safari 没有 outputLatency 用 baseLatency 兜底（≈5-20ms），clamp 1s 防异常值。
     const outLatSec = Math.min(1, (Number.isFinite(this.ctx?.outputLatency) ? this.ctx.outputLatency : this.ctx?.baseLatency) || 0);
-    const expectedSec = (this._serverNow() - this.startServerTime) / 1000 + this.trackOffsetMs / 1000 + outLatSec;
+    // v4: 双轨 expectedSec — tick 锚点优先（continuous 真理源），未到位时 fallback v3 公式
+    // 这样 server JUGUANG_SYNC_V4_ENABLED=0 时 client 自动回到 v3 行为（无破坏性回滚）
+    const tickExpected = this._expectedPositionSec();
+    const expectedSec = tickExpected != null
+      ? tickExpected + outLatSec
+      : (this._serverNow() - this.startServerTime) / 1000 + this.trackOffsetMs / 1000 + outLatSec;
     const driftMs = (actualSec - expectedSec) * 1000;
     const bufferAheadMs = this._bufferAheadMs();
     const abs = Math.abs(driftMs);
@@ -571,7 +605,9 @@ export class SyncClient {
       bufferAheadMs,
     };
 
-    if (RATE_SERVO_ENABLED && abs < SEEK_THRESHOLD_MS) {
+    // v4 (Phase C): tab 切回前台 2s 内 SEEK_THRESHOLD ×3，软收敛避免一次性硬 seek
+    const seekThreshold = this._softDriftMode ? SEEK_THRESHOLD_MS * 3 : SEEK_THRESHOLD_MS;
+    if (RATE_SERVO_ENABLED && abs < seekThreshold) {
       // 微速率伺服（Snapcast/Sonos/AirPlay 的标准做法）：小漂移不 seek——
       // seek 必产生 20-300ms 可闻断口；用 ≤±1.5% 的 playbackRate 连续微调渐进收敛。
       // preservesPitch=false（元素创建时已设）→ 纯重采样，无时间拉伸伪影。
@@ -586,7 +622,7 @@ export class SyncClient {
         try { this.audio.playbackRate = rate; } catch {}
       }
       patch.playbackRate = rate;
-    } else if (abs >= SEEK_THRESHOLD_MS) {
+    } else if (abs >= seekThreshold) {
       // 硬 seek = 最后手段：只处理大错位（网络卡死恢复/标签页冻结唤醒/伺服关闭时）。
       // 同曲上限：超限说明时钟或音频引擎异常，继续 seek 只会更卡（不再自增 seekCount 免得吓人）。
       if (this._driftSeeksThisTrack >= MAX_DRIFT_SEEKS) { this._update(patch); return; }

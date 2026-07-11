@@ -217,7 +217,10 @@ class Hub {
   }
 
   // v4: 只广播给 supportsSyncTicks=true 的连接（避免 v3 客户端收到冗余 sync 消息）
+  // 同时 gate kill switch: 若 _syncTimer 为 null（JUGUANG_SYNC_V4_ENABLED=0），完全 noop
+  // 这样 play()/pause() 里的 immediate sync tick 也自动受 env 控制
   broadcastSyncToZone(zoneId, msg) {
+    if (!this._syncTimer) return 0;
     let n = 0;
     for (const e of this.conns.values()) {
       if (e.zoneId === zoneId && e.conn.supportsSyncTicks && e.conn.send(msg)) n++;
@@ -294,6 +297,10 @@ class Hub {
       console.log("[sync-tick] stopped");
     }
   }
+
+  // 检查 sync tick 是否启用（JUGUANG_SYNC_V4_ENABLED=0 时返回 false）
+  // 给 late-join 等不走 broadcastSyncToZone 的代码路径用
+  syncEnabled() { return this._syncTimer != null; }
 }
 
 export const hub = new Hub();
@@ -346,7 +353,8 @@ export function handleUpgrade(req, socket) {
         });
         // v4: 立即补发一个 sync tick 拿到 tick anchor（不等 200ms 节拍）
         // 只对 supportsSyncTicks=true 的连接发，避免 v3 客户端收到冗余消息
-        if (conn.supportsSyncTicks) {
+        // 同时受 env kill switch 控制：JUGUANG_SYNC_V4_ENABLED=0 时完全不发
+        if (conn.supportsSyncTicks && hub.syncEnabled()) {
           const syncSnap = snapshotForSync(conn.zoneId);
           if (syncSnap) {
             conn.send({

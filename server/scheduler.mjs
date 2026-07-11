@@ -128,7 +128,8 @@ export function play(zoneId, trackId, offsetMs = 0) {
     trackOffsetMs: offsetMs,
   });
   // v4: 立即 broadcast 一个 sync tick（不等 200ms 节拍），让客户端第一时间拿到 tick anchor
-  _hub?.broadcastToZone(zoneId, {
+  // 用 broadcastSyncToZone 只发 supportsSyncTicks=true 的连接（与 200ms tick 一致）
+  _hub?.broadcastSyncToZone(zoneId, {
     type: "sync",
     zoneId,
     trackId: t.id,
@@ -153,7 +154,7 @@ export function pause(zoneId = DEFAULT_ZONE) {
   clearAdvance(zoneId);
   _hub?.broadcastToZone(zoneId, { type: "pause", zoneId, atServerTime });
   // v4: 立即 broadcast 一个 sync tick，告知 isPlaying=false + positionMs 冻结
-  _hub?.broadcastToZone(zoneId, {
+  _hub?.broadcastSyncToZone(zoneId, {
     type: "sync",
     zoneId,
     trackId: s.track_id,
