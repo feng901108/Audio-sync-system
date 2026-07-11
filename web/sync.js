@@ -50,7 +50,7 @@ export class SyncClient {
     this.currentTrackId = null;
     this.currentTrackUrl = null;
     this.currentDurationMs = 0;
-    this.startServerTime = 0;
+    // v4 (Phase E): 删除 startServerTime 字段 — v4 drift 公式不再依赖它
     this.trackOffsetMs = 0;
     this.isPlaying = false;
     this.playTimer = null;    // 定时起播（对齐服务端 startServerTime）— 短间隔轮询, 非 setTimeout
@@ -416,7 +416,8 @@ export class SyncClient {
         return;
       case "play":
       case "seek":
-        this._startTrack(msg.trackId, msg.trackUrl, msg.durationMs, msg.startServerTime, msg.trackOffsetMs);
+        // v4 (Phase E): play 消息移除 startServerTime 字段，_startTrack 不再需要这个参数
+        this._startTrack(msg.trackId, msg.trackUrl, msg.durationMs, msg.trackOffsetMs);
         return;
       case "pause": {
         const atLocal = msg.atServerTime - this._clockOffset();
@@ -443,8 +444,8 @@ export class SyncClient {
   }
 
   // 流式起播：换曲才设 src（浏览器开始边下边播，不整文件入内存）→ seek 到 offset
-  // → 在服务端指定的 startServerTime 换算的本地时刻 play()。
-  async _startTrack(trackId, trackUrl, durationMs, startServerTime, trackOffsetMs) {
+  // v4 (Phase E): play 立即触发（loadedmetadata 后即 audio.play()，look-ahead 用 Date.now() 作锚点）
+  async _startTrack(trackId, trackUrl, durationMs, trackOffsetMs) {
     if (!this.ctx || !this.audio) return;
     const gen = ++this._gen;
     const urlChanged = this.currentTrackUrl !== trackUrl;
@@ -463,7 +464,6 @@ export class SyncClient {
       this.currentTrackId = trackId;
     }
     this.currentDurationMs = durationMs;
-    this.startServerTime = startServerTime;
     this.trackOffsetMs = trackOffsetMs;
 
     const begin = () => {
@@ -477,7 +477,8 @@ export class SyncClient {
       try { this.audio.currentTime = Math.max(0, trackOffsetMs / 1000); } catch {}
       try { this.audio.playbackRate = 1; } catch {} // 新一轮起播回正伺服速率
       this._posAnchorRaw = -1; // 位置锚点作废，seeked/playing 事件里重建
-      const localTargetMs = startServerTime - this._clockOffset();
+      // v4 (Phase E): 用 Date.now() 作锚点（立即触发 play，look-ahead 仍保留短间隔轮询防主线程 jitter）
+      const localTargetMs = Date.now() - this._clockOffset();
       const delay = Math.max(0, localTargetMs - _now());
       _log(`begin trackId=${trackId} dur=${durationMs}ms offset=${trackOffsetMs}ms delay=${delay}ms loadedMs=${this._lastLoadedMs}`);
       // 行业标准 "look-ahead scheduling" 模式（web.dev Audio Scheduling）:
@@ -590,12 +591,12 @@ export class SyncClient {
     // 把各自的延迟加进预期位置 → 对齐"扬声器出声"而非"解码位置"。
     // Safari 没有 outputLatency 用 baseLatency 兜底（≈5-20ms），clamp 1s 防异常值。
     const outLatSec = Math.min(1, (Number.isFinite(this.ctx?.outputLatency) ? this.ctx.outputLatency : this.ctx?.baseLatency) || 0);
-    // v4: 双轨 expectedSec — tick 锚点优先（continuous 真理源），未到位时 fallback v3 公式
-    // 这样 server JUGUANG_SYNC_V4_ENABLED=0 时 client 自动回到 v3 行为（无破坏性回滚）
+    // v4: 双轨 expectedSec — tick 锚点优先（continuous 真理源），fallback 用 audio.currentTime
+    // tick 未到位时（kill switch / 启动初期）drift = 0，audio 自由播放靠浏览器自身 timing
     const tickExpected = this._expectedPositionSec();
     const expectedSec = tickExpected != null
       ? tickExpected + outLatSec
-      : (this._serverNow() - this.startServerTime) / 1000 + this.trackOffsetMs / 1000 + outLatSec;
+      : actualSec + outLatSec;  // v4 (Phase E): fallback 让 drift = 0（v3 公式依赖的 startServerTime 字段已删）
     const driftMs = (actualSec - expectedSec) * 1000;
     const bufferAheadMs = this._bufferAheadMs();
     const abs = Math.abs(driftMs);

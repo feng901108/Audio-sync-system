@@ -8,11 +8,19 @@ export function setHub(hub) { _hub = hub; }
 
 // v4 (Phase D): 保留 loadedMsByDevice 作为诊断用途（监控设备加载性能、辅助定位慢端），
 // 不再参与 play() 预留时间计算（v4 tick 模型让 sync 时钟不确定性消失，PRELOAD_MS 只服务音频加载）
-const loadedMsByDevice = new Map(); // deviceId -> loadedMs
+// v4 (Phase E): 加 LRU 上限（1000 条），防长时间运行内存泄漏
+const LOADED_MS_LRU_CAP = 1000;
+const loadedMsByDevice = new Map(); // deviceId -> loadedMs（最近一次写入的在前）
 
 export function recordLoadedMs(deviceId, ms) {
   if (!deviceId || !Number.isFinite(ms) || ms <= 0) return;
+  // LRU 语义：delete + set 让 deviceId 移到 Map 末尾（最新写入）；超 cap 时淘汰最旧
+  loadedMsByDevice.delete(deviceId);
   loadedMsByDevice.set(deviceId, ms);
+  while (loadedMsByDevice.size > LOADED_MS_LRU_CAP) {
+    const oldest = loadedMsByDevice.keys().next().value;
+    loadedMsByDevice.delete(oldest);
+  }
 }
 
 // v4: 给 sync tick 用的轻量 snapshot。读 playback_state 行 + join tracks 拿 durationMs（200ms/次 主键 join 可忽略）
@@ -118,7 +126,8 @@ export function play(zoneId, trackId, offsetMs = 0) {
     trackId: t.id,
     trackUrl: `/audio/${t.filename}`,
     durationMs: Number(t.duration_ms),
-    startServerTime,
+    // v4 (Phase E): play 消息移除 startServerTime 字段
+    // 客户端从初始 sync tick（紧跟本消息）和后续 200ms 周期 tick 拿到位置，不依赖 play 消息里的 anchor
     trackOffsetMs: offsetMs,
   });
   // v4: 立即 broadcast 一个 sync tick（不等 200ms 节拍），让客户端第一时间拿到 tick anchor

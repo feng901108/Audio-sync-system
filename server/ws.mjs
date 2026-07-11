@@ -348,7 +348,7 @@ export function handleUpgrade(req, socket) {
           trackId: snap.track.id,
           trackUrl: snap.track.url,
           durationMs: snap.track.durationMs,
-          startServerTime: newStart,
+          // v4 (Phase E): 移除 startServerTime 字段，客户端从紧跟的 sync tick 拿位置
           trackOffsetMs: Math.max(0, projectedOffsetMs),
         });
         // v4: 立即补发一个 sync tick 拿到 tick anchor（不等 200ms 节拍）
