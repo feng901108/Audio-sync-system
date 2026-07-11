@@ -1,12 +1,13 @@
 import { db } from "./db.mjs";
 
-export const PRELOAD_MS = 1500;        // 基础预留时间（毫秒），A7 可被加载耗时动态拉高
+export const PRELOAD_MS = 800;         // v4 (Phase D): 1500→800。tick-driven 后只剩音频加载需求，预留短一点
 const DEFAULT_ZONE = 1;
 
 let _hub = null;
 export function setHub(hub) { _hub = hub; }
 
-// 动态 PRELOAD_MS：记录每个 device 最近一次 metadata 加载耗时，play 时按 zone 内最慢设备拉长
+// v4 (Phase D): 保留 loadedMsByDevice 作为诊断用途（监控设备加载性能、辅助定位慢端），
+// 不再参与 play() 预留时间计算（v4 tick 模型让 sync 时钟不确定性消失，PRELOAD_MS 只服务音频加载）
 const loadedMsByDevice = new Map(); // deviceId -> loadedMs
 
 export function recordLoadedMs(deviceId, ms) {
@@ -38,17 +39,15 @@ export function snapshotForSync(zoneId) {
   };
 }
 
-// 按当前 zone 内活跃设备的最大 loadedMs 决定本次 play 预留时间：
-// loadedMs 越大的设备 metadata 加载越慢，预留必须留够 buffer × 2 + 500ms 余量
-export function getEffectivePreloadMs(zoneId) {
-  const base = PRELOAD_MS;
-  if (!_hub) return base;
+// 诊断用：导出当前 zone 内最慢设备的 loadedMs（v4 不再用于 play 预留）
+export function getMaxLoadedMs(zoneId) {
+  if (!_hub) return 0;
   let maxLoaded = 0;
   for (const id of _hub.onlineDeviceIdsInZone(zoneId)) {
     const m = loadedMsByDevice.get(id);
     if (m && m > maxLoaded) maxLoaded = m;
   }
-  return Math.max(base, Math.round(maxLoaded * 2) + 500);
+  return maxLoaded;
 }
 
 // 每 zone 一份调度状态
@@ -105,13 +104,8 @@ export function play(zoneId, trackId, offsetMs = 0) {
   if (trackId === undefined) { trackId = zoneId; zoneId = DEFAULT_ZONE; } // 兼容 play(trackId, offset)
   const t = getTrack(trackId);
   if (!t) return { ok: false, error: "曲目不存在" };
-  // 动态 PRELOAD_MS：按 zone 内最慢设备的 metadata 加载耗时拉长，确保所有设备都有足够 buffer 时间
-  const effectivePreload = getEffectivePreloadMs(zoneId);
-  // v4: 所有时间锚点统一为 now-relative（不再 + effectivePreload）
-  //   - tickAnchor (= startServerTime): 同时作为 DB 字段（tick 公式用）和 broadcast 字段（客户端参考）
-  //   - 客户端 v3 行为：loadedmetadata 触发 begin() → audio.play() 在 localTargetMs 触发
-  //     当 localTargetMs = past，audio.play() 立即触发（loadedmetadata 已发生，无问题）
-  //   - 客户端需要 PRELOAD_MS 时间加载音频，但客户端自己管理：loadedmetadata 完成前 begin() 不被调用
+  // v4 (Phase D): 直接用固定 PRELOAD_MS，不再按 slow-device 动态拉长（tick 模型接管时钟缓冲）
+  // PRELOAD_MS 当前仅作 advisory（DB 与 broadcast 字段都 = Date.now()），客户端音频加载由浏览器自己管理
   const startServerTime = Date.now();
   db.prepare(`UPDATE playback_state
     SET track_id = ?, start_server_time = ?, track_offset_ms = ?,
