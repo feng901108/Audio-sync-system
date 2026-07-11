@@ -2,10 +2,12 @@ const PING_INTERVAL_MS = 2000;
 const PING_BURST_COUNT = 5;
 const PING_BURST_INTERVAL_MS = 100;
 const DRIFT_CHECK_MS = 500;       // 漂移检查周期（伺服模式需要更频繁的小步修正；DOM 开销 2Hz 可忽略）
-const DRIFT_DEADBAND_MS = 50;     // v4 hotfix: 30→50。iOS Safari 蓝牙/AirPods 输出延迟 + NTP 偏差叠加让 drift 常 >30ms，rate 更早介入
+const DRIFT_DEADBAND_MS = 50;     // v4 hotfix: 30→50。iOS Safari 蓝牙/AirPods 输出延迟 + NTP 偏差叠加让 drift 常 >30ms
 const RATE_SERVO_ENABLED = true;  // 微速率伺服开关。若现场再出现爆音疑虑，置 false 回退纯 seek 模式
-const RATE_SERVO_MAX = 0.04;      // v4 hotfix: 0.015→0.04 (±4%, ~70 音分)。iOS 时钟差 140ms 场景下 1.5% 上限追不上 300ms 漂移；±4% BGM 仍可接受
-const RATE_SERVO_HORIZON_S = 4;   // v4 hotfix: 8→4。target 4s 内消化漂移（之前 8s 用户感知"卡一会儿"）
+const RATE_SERVO_MAX = 0.025;     // v4.1: 0.04→0.025 (±2.5%, ~43 音分)。4% 在 iOS Safari 每次 playbackRate 赋值产生微卡顿；2.5% 平衡收敛速度与平滑度
+const RATE_SERVO_HORIZON_S = 4;   // target 4s 内消化漂移
+const RATE_HYSTERESIS = 0.003;    // v4.1: rate 变化 < 0.3% 不赋值，避免 iOS 重采样器因 1.013→1.014 频繁切换产生微断口
+const DRIFT_EMA_ALPHA = 0.3;      // v4.1: drift EMA 平滑因子。α=0.3 约 3-4 个 sample（1.5-2s）收敛，滤除网络抖动噪声
 const SEEK_THRESHOLD_MS = 500;    // 硬 seek 阈值：只有大错位（网络卡死恢复/标签页冻结唤醒）才 seek——seek 必产生可闻断口
 const SEEK_COOLDOWN_MS = 2000;    // seek 后冷却上限（seeked 事件会把冷却提前到完成后 300ms，这里是兜底）
 const MAX_DRIFT_SEEKS = 10;       // 同曲漂移 seek 上限：超此值 clock offset 或 currentTime 严重异常，停 seek 等下一首
@@ -84,6 +86,7 @@ export class SyncClient {
     this._lastSyncIntervalMs = 0;     // 最近一次 tick 间隔
     // v4 (Phase C): drift 公式开关（escape hatch via localStorage "juguang.useSyncTicks" = "0"）
     this.useSyncTicks = localStorage.getItem("juguang.useSyncTicks") !== "0";
+    this._smoothDriftMs = 0;           // v4.1: drift EMA 平滑值，防止噪声触发 rate 振荡
     this._softDriftMode = false;      // tab 切回前台 2s 内：SEEK_THRESHOLD ×3 软收敛
     // 两层音量：master 来自服务端下发（admin 调的），local 是用户本机拉杆（0-1 倍率）
     this.masterVolume = 1;
@@ -476,6 +479,7 @@ export class SyncClient {
       this._errorRetries = 0;
       // 新曲重置漂移 seek 计数：上一曲的累计 seek 不应限制新曲的漂移修正
       this._driftSeeksThisTrack = 0;
+      this._smoothDriftMs = 0; // 新曲 EMA 归零，避免旧曲残余 drift 影响伺服初始行为
       // 新曲位置锚点作废（loadedmetadata / playing 事件里重建）
       this._posAnchorRaw = -1;
     } else if (this.currentTrackId !== trackId) {
@@ -629,20 +633,21 @@ export class SyncClient {
     // v4 (Phase C): tab 切回前台 2s 内 SEEK_THRESHOLD ×3，软收敛避免一次性硬 seek
     const seekThreshold = this._softDriftMode ? SEEK_THRESHOLD_MS * 3 : SEEK_THRESHOLD_MS;
     if (RATE_SERVO_ENABLED && abs < seekThreshold) {
-      // 微速率伺服（Snapcast/Sonos/AirPlay 的标准做法）：小漂移不 seek——
-      // seek 必产生 20-300ms 可闻断口；用 ≤±1.5% 的 playbackRate 连续微调渐进收敛。
-      // preservesPitch=false（元素创建时已设）→ 纯重采样，无时间拉伸伪影。
+      // v4.1: EMA 平滑 drift — 网络抖动 / tick 丢失会让原始 drift 跳变 ±30ms，
+      // 不平滑的话 rate 每 500ms 抖动一次，iOS Safari 每次 playbackRate 赋值有微断口。
+      this._smoothDriftMs = DRIFT_EMA_ALPHA * driftMs + (1 - DRIFT_EMA_ALPHA) * this._smoothDriftMs;
+      const smoothAbs = Math.abs(this._smoothDriftMs);
       let rate = 1;
-      if (abs > DRIFT_DEADBAND_MS) {
-        // P 控制器：目标 ~RATE_SERVO_HORIZON_S 秒消化当前漂移。落后（drift<0）加速。
-        // 量化到 0.1% 步进，减少无意义的 playbackRate 赋值抖动。
-        const corr = Math.max(-RATE_SERVO_MAX, Math.min(RATE_SERVO_MAX, -(driftMs / 1000) / RATE_SERVO_HORIZON_S));
+      if (smoothAbs > DRIFT_DEADBAND_MS) {
+        // P 控制器：目标 ~RATE_SERVO_HORIZON_S 秒消化平滑后的漂移。落后（drift<0）加速。
+        const corr = Math.max(-RATE_SERVO_MAX, Math.min(RATE_SERVO_MAX, -(this._smoothDriftMs / 1000) / RATE_SERVO_HORIZON_S));
         rate = 1 + Math.round(corr * 1000) / 1000;
       }
-      if (this.audio.playbackRate !== rate) {
+      // v4.1: rate 迟滞 — delta < RATE_HYSTERESIS 不赋值，防止 iOS 重采样器频繁微调卡顿
+      if (Math.abs(this.audio.playbackRate - rate) >= RATE_HYSTERESIS) {
         try { this.audio.playbackRate = rate; } catch {}
       }
-      patch.playbackRate = rate;
+      patch.playbackRate = this.audio.playbackRate;
     } else if (abs >= seekThreshold) {
       // 硬 seek = 最后手段：只处理大错位（网络卡死恢复/标签页冻结唤醒/伺服关闭时）。
       // 同曲上限：超限说明时钟或音频引擎异常，继续 seek 只会更卡（不再自增 seekCount 免得吓人）。
@@ -652,6 +657,7 @@ export class SyncClient {
 
       this._driftSeeksThisTrack++;
       this._seekCooldownUntil = _now() + SEEK_COOLDOWN_MS;
+      this._smoothDriftMs = 0; // seek 跳到正确位置后 EMA 归零
       try { this.audio.playbackRate = 1; } catch {} // seek 前回正伺服速率
       patch.playbackRate = 1;
       patch.seekCount = (this.status.seekCount ?? 0) + 1;
