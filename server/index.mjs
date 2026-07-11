@@ -628,8 +628,12 @@ server.listen(PORT, HOST, () => {
     hub.pingAll();
   }, HEARTBEAT_INTERVAL_MS).unref();
   // v4: sync tick 周期性广播（Phase A.0 仅 log；Phase A 改成真广播）
-  // 通过 env JUGUANG_SYNC_V4_ENABLED=0 可一键关闭（Phase C 后生效；A.0/A 阶段只是 log + broadcast）
-  if (process.env.JUGUANG_SYNC_V4_ENABLED !== "0") {
+  // 通过 env JUGUANG_SYNC_V4_ENABLED 可一键关闭。认 "0"/"false"/"no"/"off" 为关闭，其余为开启
+  const syncV4Enabled = process.env.JUGUANG_SYNC_V4_ENABLED !== "0"
+    && process.env.JUGUANG_SYNC_V4_ENABLED !== "false"
+    && process.env.JUGUANG_SYNC_V4_ENABLED !== "no"
+    && process.env.JUGUANG_SYNC_V4_ENABLED !== "off";
+  if (syncV4Enabled) {
     hub.startSyncTicks({ listZones, snapshotForSync }, SYNC_TICK_INTERVAL_MS);
   }
 });

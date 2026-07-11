@@ -34,8 +34,9 @@ export function snapshotForSync(zoneId) {
   const offsetMs = Number(s.track_offset_ms ?? 0);
   // v4 tick 公式：positionMs = offset + (now - startServerTime)，但仅在播放中推进
   // Phase A 改 start_server_time = Date.now() 后此处即为「当前播放位置」
+  const now = Date.now();  // 一次捕获，避免两次调用间 GC pause 导致 (positionMs, serverNow) 不匹配
   const positionMs = isPlaying && startServerTime > 0
-    ? Math.max(0, offsetMs + (Date.now() - startServerTime))
+    ? Math.max(0, offsetMs + (now - startServerTime))
     : Math.max(0, offsetMs);
   return {
     zoneId: Number(s.zone_id),
@@ -43,20 +44,12 @@ export function snapshotForSync(zoneId) {
     positionMs: Math.round(positionMs),
     isPlaying,
     durationMs: t ? Number(t.duration_ms) : 0,
-    serverNow: Date.now(),
+    serverNow: now,
   };
 }
 
-// 诊断用：导出当前 zone 内最慢设备的 loadedMs（v4 不再用于 play 预留）
-export function getMaxLoadedMs(zoneId) {
-  if (!_hub) return 0;
-  let maxLoaded = 0;
-  for (const id of _hub.onlineDeviceIdsInZone(zoneId)) {
-    const m = loadedMsByDevice.get(id);
-    if (m && m > maxLoaded) maxLoaded = m;
-  }
-  return maxLoaded;
-}
+// v4 (review fix): getMaxLoadedMs 无调用者，已删除。loadedMsByDevice/recordLoadedMs 保留作为诊断收集
+// （数据通过 reportLoaded → recordLoadedMs → LRU Map，但暂无消费端；后续可接 admin 调试接口）
 
 // 每 zone 一份调度状态
 const zones = new Map();

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "./db.mjs";
-import { snapshot, PRELOAD_MS, recordLoadedMs, snapshotForSync } from "./scheduler.mjs";
+import { snapshot, recordLoadedMs, snapshotForSync } from "./scheduler.mjs";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const DEFAULT_ZONE = 1;
@@ -291,7 +291,7 @@ class Hub {
 
   stopSyncTicks() {
     if (this._syncTimer) {
-      clearInterval(this._syncTimer);
+      clearTimeout(this._syncTimer);
       this._syncTimer = null;
       this._syncScheduler = null;
       console.log("[sync-tick] stopped");
@@ -337,9 +337,9 @@ export function handleUpgrade(req, socket) {
       conn.send({ type: "hello", deviceId: dev.id, zoneId: conn.zoneId, serverTime: Date.now(), ip: conn.ip });
       conn.send({ type: "setVolume", volume: Number(dev.volume) });
       const snap = snapshot(conn.zoneId);
-      if (snap.isPlaying && snap.track && snap.startServerTime) {
-        // 中途加入：v4 改用 now-relative anchor（Date.now()，不再 + PRELOAD_MS）
-        // late-join 客户端通常已在加载中，给 future anchor 反而导致 audio.play() 等过久
+      if (snap.isPlaying && snap.track) {
+        // 中途加入：v4 now-relative anchor（不再 + PRELOAD_MS，不依赖 startServerTime）
+        // late-join 客户端靠紧跟的 sync tick 拿位置 anchor
         const newStart = Date.now();
         const projectedOffsetMs = snap.trackOffsetMs + Math.max(0, newStart - snap.startServerTime);
         conn.send({

@@ -79,6 +79,7 @@ export class SyncClient {
     this.lastSyncPositionMs = 0;       // 最近一次 server tick 的 positionMs
     this.lastSyncServerNow = 0;       // 最近一次 server tick 的 serverNow
     this._syncTickCount = 0;          // 累计收到的 tick 数
+    this._syncIsPlaying = false;      // 最近一次 tick 的 isPlaying（暂停时 _expectedPositionSec 不外推）
     this._ticksDropped = 0;           // 距上一个 tick > 3 × lastIntervalMs 的次数
     this._lastSyncIntervalMs = 0;     // 最近一次 tick 间隔
     // v4 (Phase C): drift 公式开关（escape hatch via localStorage "juguang.useSyncTicks" = "0"）
@@ -277,7 +278,9 @@ export class SyncClient {
 
     // v4 (Phase C): tab 切回前台 2s 内启用软 SEEK_THRESHOLD（×3），让后台累积的 drift
     // 通过速率伺服软收敛而非一次性硬 seek。setTimeout 2s 后自动恢复硬阈值。
-    document.addEventListener("visibilitychange", () => {
+    // 存 handler 引用，connect() 再次调用时先 remove 旧的，避免重连累积泄漏
+    if (this._visHandler) document.removeEventListener("visibilitychange", this._visHandler);
+    this._visHandler = () => {
       if (document.visibilityState === "visible") {
         this._softDriftMode = true;
         if (this._softDriftTimer) clearTimeout(this._softDriftTimer);
@@ -286,7 +289,8 @@ export class SyncClient {
           this._softDriftTimer = null;
         }, 2000);
       }
-    });
+    };
+    document.addEventListener("visibilitychange", this._visHandler);
   }
 
   // iOS: 监听任意用户手势（点击/触摸/按键）来解锁 AudioContext 和 autoplay
@@ -359,7 +363,13 @@ export class SyncClient {
   }
   _stopHeartbeatWatch() { if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; } }
 
-  _stopLoops() { this._stopPing(); this._stopDrift(); this._stopHeartbeatWatch(); }
+  _stopLoops() {
+    this._stopPing(); this._stopDrift(); this._stopHeartbeatWatch();
+    if (this._softDriftTimer) { clearTimeout(this._softDriftTimer); this._softDriftTimer = null; }
+    this._softDriftMode = false;
+    // disconnect 时清理 visibility 监听，避免重连累积（_visHandler 在 connect() 中重挂）
+    if (this._visHandler) { document.removeEventListener("visibilitychange", this._visHandler); this._visHandler = null; }
+  }
 
   _clockOffset() {
     if (!this.clockSamples.length) return 0;
@@ -385,6 +395,7 @@ export class SyncClient {
         this.lastSyncReceivedAt = now;
         this.lastSyncPositionMs = Number(msg.positionMs ?? 0);
         this.lastSyncServerNow = Number(msg.serverNow ?? 0);
+        this._syncIsPlaying = !!msg.isPlaying;  // 用于 _expectedPositionSec 判断暂停时不外推
         if (interval > 0) this._lastSyncIntervalMs = interval;
         this._syncTickCount++;
         this._update({
@@ -477,8 +488,8 @@ export class SyncClient {
       try { this.audio.currentTime = Math.max(0, trackOffsetMs / 1000); } catch {}
       try { this.audio.playbackRate = 1; } catch {} // 新一轮起播回正伺服速率
       this._posAnchorRaw = -1; // 位置锚点作废，seeked/playing 事件里重建
-      // v4 (Phase E): 用 Date.now() 作锚点（立即触发 play，look-ahead 仍保留短间隔轮询防主线程 jitter）
-      const localTargetMs = Date.now() - this._clockOffset();
+      // v4 (Phase E): 用 monotonic _now() 作锚点（统一时钟域，避免 Date.now() 与 monotonic-derived clockOffset 混合在 NTP 步进时偏差）
+      const localTargetMs = _now() - this._clockOffset();
       const delay = Math.max(0, localTargetMs - _now());
       _log(`begin trackId=${trackId} dur=${durationMs}ms offset=${trackOffsetMs}ms delay=${delay}ms loadedMs=${this._lastLoadedMs}`);
       // 行业标准 "look-ahead scheduling" 模式（web.dev Audio Scheduling）:
@@ -563,9 +574,11 @@ export class SyncClient {
     if (this.lastSyncReceivedAt == null) return null;
     // 等第二个 tick 才启用：第一个 tick jitter 大，可能 anchor 到不稳定的状态
     if (this._syncTickCount < 2) return null;
-    // 5s 内没收到 sync 视为连接问题（server 暂停广播 / 网络断），回退 v3
+    // 5s 内没收到 sync 视为连接问题（server 暂停广播 / 网络断），回退 null
     // 5s 比单 tick 间隔 200ms 大很多，给偶尔的 jitter/loss 留余量
     if (_now() - this.lastSyncReceivedAt > 5000) return null;
+    // 暂停时不外推：server tick 的 isPlaying=false、positionMs 已冻结
+    if (!this._syncIsPlaying) return this.lastSyncPositionMs / 1000;
     return this.lastSyncPositionMs / 1000 + (_now() - this.lastSyncReceivedAt) / 1000;
   }
 
@@ -596,7 +609,7 @@ export class SyncClient {
     const tickExpected = this._expectedPositionSec();
     const expectedSec = tickExpected != null
       ? tickExpected + outLatSec
-      : actualSec + outLatSec;  // v4 (Phase E): fallback 让 drift = 0（v3 公式依赖的 startServerTime 字段已删）
+      : actualSec;  // v4 (Phase E): fallback 让 drift = 0。用 actualSec 而非 actualSec+outLatSec，否则 drift=-outLatSec 非零
     const driftMs = (actualSec - expectedSec) * 1000;
     const bufferAheadMs = this._bufferAheadMs();
     const abs = Math.abs(driftMs);
