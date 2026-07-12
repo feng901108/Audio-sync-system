@@ -9,6 +9,7 @@ const RATE_SERVO_HORIZON_S = 4;   // target 4s 内消化漂移
 const RATE_HYSTERESIS = 0.003;    // v4.1: rate 变化 < 0.3% 不赋值，避免 iOS 重采样器因 1.013→1.014 频繁切换产生微断口
 const DRIFT_EMA_ALPHA = 0.3;      // v4.1: drift EMA 平滑因子。α=0.3 约 3-4 个 sample（1.5-2s）收敛，滤除网络抖动噪声
 const SEEK_THRESHOLD_MS = 500;    // 硬 seek 阈值：只有大错位（网络卡死恢复/标签页冻结唤醒）才 seek——seek 必产生可闻断口
+const PLAY_GRACE_MS = 5000;       // v4.1: play 后 5s 内不硬 seek——音频加载期间 sync tick 已推进，初始 drift 可达 300-600ms，让 servo 消化而非 seek
 const SEEK_COOLDOWN_MS = 2000;    // seek 后冷却上限（seeked 事件会把冷却提前到完成后 300ms，这里是兜底）
 const MAX_DRIFT_SEEKS = 10;       // 同曲漂移 seek 上限：超此值 clock offset 或 currentTime 严重异常，停 seek 等下一首
 const MIN_BUFFER_FOR_SEEK_MS = 1000; // v4 (Phase D): 800→1000。tick 模型让 drift 更小，seek 前需要更稳的缓冲
@@ -87,6 +88,7 @@ export class SyncClient {
     // v4 (Phase C): drift 公式开关（escape hatch via localStorage "juguang.useSyncTicks" = "0"）
     this.useSyncTicks = localStorage.getItem("juguang.useSyncTicks") !== "0";
     this._smoothDriftMs = 0;           // v4.1: drift EMA 平滑值，防止噪声触发 rate 振荡
+    this._playGraceUntil = 0;         // v4.1: play 后 grace 期间不硬 seek（音频加载延迟 300-600ms 会导致初始大 drift）
     this._softDriftMode = false;      // tab 切回前台 2s 内：SEEK_THRESHOLD ×3 软收敛
     // 两层音量：master 来自服务端下发（admin 调的），local 是用户本机拉杆（0-1 倍率）
     this.masterVolume = 1;
@@ -520,6 +522,7 @@ export class SyncClient {
           // 单看 _gen 不够（stop 不递增 _gen），要再校验 audio 未暂停
           if (gen !== this._gen || this.audio?.paused) return;
           this.isPlaying = true;
+          this._playGraceUntil = _now() + PLAY_GRACE_MS; // v4.1: 加载完成后 grace 期间不硬 seek
           this._update({ isPlaying: true, durationMs, needsUserGesture: false });
         }).catch((e) => {
           // autoplay policy 拒绝等：iOS 要求 user gesture，标记需解锁
@@ -630,9 +633,11 @@ export class SyncClient {
       bufferAheadMs,
     };
 
+    // v4.1: play grace — 音频加载后 5s 内不硬 seek（初始 drift 300-600ms 由 servo 消化）
+    const inPlayGrace = _now() < this._playGraceUntil;
     // v4 (Phase C): tab 切回前台 2s 内 SEEK_THRESHOLD ×3，软收敛避免一次性硬 seek
     const seekThreshold = this._softDriftMode ? SEEK_THRESHOLD_MS * 3 : SEEK_THRESHOLD_MS;
-    if (RATE_SERVO_ENABLED && abs < seekThreshold) {
+    if (RATE_SERVO_ENABLED && (abs < seekThreshold || inPlayGrace)) {
       // v4.1: EMA 平滑 drift — 网络抖动 / tick 丢失会让原始 drift 跳变 ±30ms，
       // 不平滑的话 rate 每 500ms 抖动一次，iOS Safari 每次 playbackRate 赋值有微断口。
       this._smoothDriftMs = DRIFT_EMA_ALPHA * driftMs + (1 - DRIFT_EMA_ALPHA) * this._smoothDriftMs;

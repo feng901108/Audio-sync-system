@@ -280,6 +280,23 @@ export function snapshot(zoneId = DEFAULT_ZONE) {
   };
 }
 
+// v4.1: 服务器启动时恢复 advance 定时器 — Docker rebuild / 进程重启后 DB 仍有 is_playing=1，
+// 但内存中的 setTimeout 全部丢失。不恢复的话 loop-one / loop-all / sequential next 全部失效。
+export function recoverAdvanceTimers() {
+  const rows = db.prepare("SELECT * FROM playback_state WHERE is_playing = 1 AND track_id IS NOT NULL").all();
+  for (const s of rows) {
+    const t = getTrack(s.track_id);
+    if (!t) continue;
+    const startServerTime = Number(s.start_server_time ?? 0);
+    const offsetMs = Number(s.track_offset_ms ?? 0);
+    const durationMs = Number(t.duration_ms);
+    if (startServerTime > 0 && durationMs > 0) {
+      scheduleAdvance(Number(s.zone_id), durationMs, startServerTime, offsetMs);
+      console.log(`[scheduler] recovered advance timer: zone=${s.zone_id} track=${s.track_id} remain=${durationMs - offsetMs - (Date.now() - startServerTime)}ms`);
+    }
+  }
+}
+
 // === Zone CRUD ===
 
 export function listZones() {

@@ -12,7 +12,7 @@ import {
   listPlaylists, getPlaylist, createPlaylist, renamePlaylist, deletePlaylist,
   listPlaylistTracks, addTracksToPlaylist, removeTrackFromPlaylist,
   loadPlaylistToQueue,
-  snapshotForSync,
+  snapshotForSync, recoverAdvanceTimers,
 } from "./scheduler.mjs";
 import { parseMultipart } from "./multipart.mjs";
 import { probeAudioDuration } from "./audio-probe.mjs";
@@ -636,4 +636,7 @@ server.listen(PORT, HOST, () => {
   if (syncV4Enabled) {
     hub.startSyncTicks({ listZones, snapshotForSync }, SYNC_TICK_INTERVAL_MS);
   }
+  // v4.1: 恢复 advance 定时器 — Docker rebuild / 进程重启后 DB 仍有 is_playing=1，
+  // 但内存中 setTimeout 全部丢失。不恢复则 loop-one / loop-all / sequential next 全部失效
+  recoverAdvanceTimers();
 });
