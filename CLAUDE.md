@@ -1,6 +1,6 @@
 # 聚光广播 (Juguang) · 项目规范
 
-> **状态：🟢 v3 已合并 main** | 最后更新：2026-07-10 | v3 播放平滑化（微速率伺服替代 seek 修正，借鉴 Snapcast/AirPlay）| 待 NAS 端 docker rebuild 验证上线
+> **状态：🟢 v4.1 已上线** | 最后更新：2026-07-12 | v4 tick-driven 同步（借鉴 Shairport Sync/Snapcast/AirPlay）+ v4.1 EMA 平滑 + play grace + advance 恢复
 
 > 园区多设备音频同步广播系统。一处选歌，多端 < 80ms 内同步播放。
 > 服务端零依赖（Node.js ≥ 22.5 内置 `node:sqlite`），前端零构建。
@@ -106,40 +106,42 @@ node -e "import('./server/scheduler.mjs').then(m => console.log('scheduler.mjs e
 | 文件 | 职责 |
 |---|---|
 | `server/index.mjs` | HTTP 路由 + 静态托管（按扩展名分支：`/audio/*` 强缓存 + ETag/304，HTML/JS/CSS 仍 no-store）+ Range 容错 + WebSocket upgrade |
-| `server/scheduler.mjs` | 播放状态机：play/pause/resume/stop/seek/next/prev/queue、mode（sequential/loop-one/shuffle/loop-all）、zone CRUD、playlist CRUD、`getEffectivePreloadMs` 慢设备自适应 |
-| `server/ws.mjs` | 自实现 WebSocket + Hub（多设备、zone-scoped 广播、僵尸清理、协议层心跳 `hub.pingAll()`、`recordLoadedMs` 上报收集） |
+| `server/scheduler.mjs` | 播放状态机：play/pause/resume/stop/seek/next/prev/queue、mode（sequential/loop-one/shuffle/loop-all）、zone CRUD、playlist CRUD、`snapshotForSync` v4 tick 数据源、`recoverAdvanceTimers` 重启恢复 |
+| `server/ws.mjs` | 自实现 WebSocket + Hub（多设备、zone-scoped 广播、`broadcastSyncToZone` v4 tick 广播、僵尸清理、协议层心跳 `hub.pingAll()`） |
 | `server/db.mjs` | SQLite 表结构（admins / tracks / devices / playback_state / sessions / zones / playlists） |
 | `server/auth.mjs` | scrypt 密码哈希 + 自管 session（cookie: `juguang.sid`） |
 | `server/multipart.mjs` | 自实现 multipart/form-data 解析（上限 1GB） |
 | `server/audio-probe.mjs` | MP3 / WAV 时长探测（MP3 首帧 bitrate 推算 CBR 准 VBR 近似；WAV 读 RIFF data/byteRate） |
 | `server/init-admin.mjs` | 初始化管理员 CLI |
-| `web/sync.js` | 客户端同步核心：NTP 时钟同步、漂移修正、Web Audio 调度、iOS 解锁（`playsinline` / `ctx.onstatechange` / `needsUserGesture`）、MediaError 分码、`bufferAheadMs` 上报 |
+| `web/sync.js` | 客户端同步核心：v4 tick-driven 同步（`_expectedPositionSec` 锚点外推）、EMA drift 平滑 + P-controller rate servo、play grace period、NTP 时钟同步、Web Audio 调度、iOS 解锁、MediaError 分码 |
 | `scripts/deploy.sh` | 本机一键部署（git + WebDAV） |
 
-**同步原理要点**（详见 README §"同步原理"）：
+**同步原理要点**（v4 tick-driven 架构，借鉴 Shairport Sync / Snapcast / AirPlay）：
 
 1. 客户端每 2s ping 一次，取最近 10 次 RTT 最小 3 次的 offset 中位数作为时钟差
-2. 服务端 `play` 命令带 `startServerTime = now + effectivePreloadMs`（基础 1500ms，慢设备上报 `loadedMs` 后按 zone 内最慢 ×2 + 500 自动拉长），客户端换算到本地时刻精确 `start()`
-3. 每 0.5s 用**插值位置时钟**（currentTime 变化记锚点 + monotonic 外推，消除 Safari 250ms 量化噪声）比对预期位置（含 `outputLatency` 补偿，对齐扬声器出声）：|drift| ≤ 30ms 死区不动；30–500ms 用 **±1.5% playbackRate 微速率伺服**渐进收敛（`preservesPitch=false` 纯重采样——v3 更正：v1 的"咯噔"声是 WSOLA 时间拉伸伪影 + 1.0↔0.95 硬切换，不是 DAC 重锁；playbackRate 从不改变输出流采样率）；≥500ms 才硬 seek（最后手段，带缓冲守卫 + 同曲上限）。这是 Snapcast/Sonos/AirPlay 多房间系统的标准做法。
-4. 客户端 `loadedmetadata` 就绪时上报 `reportLoaded { loadedMs }`，服务端缓存 `Map<deviceId, ms>`，`play()` 取 zone 内最慢动态调整
-5. 服务端每 `HEARTBEAT_INTERVAL_MS = 10s` 发 WS 协议层 ping frame，客户端自动回 pong；比 sweep（30s）更早发现半开连接
+2. **服务端是位置真理源**：每 200ms ± 25ms 广播 `{type:"sync", positionMs, serverNow, isPlaying}` 给所有 `supportsSyncTicks=true` 的连接；play/pause/seek 后立即补发一个 tick（不等 200ms 节拍）
+3. 客户端用**最新 sync tick + monotonic 外推**得到 expected position（`_expectedPositionSec`），等第 2 个 tick 到达后才启用（首 tick jitter 大）；5s 无 tick 回退 drift=0
+4. 每 0.5s 用**插值位置时钟**（Safari currentTime 250ms 量化消噪）比对预期位置（含 `outputLatency` 补偿）：**EMA 平滑 drift**（α=0.3）→ 死区 50ms 内不动 → 50–500ms 用 **±2.5% playbackRate 微速率伺服**（`preservesPitch=false` 纯重采样，rate 变化迟滞 0.3% 防 iOS Safari 重采样器微卡顿）→ ≥500ms 硬 seek（最后手段，play 后 5s grace 期间不硬 seek）
+5. 服务端每 `HEARTBEAT_INTERVAL_MS = 10s` 发 WS 协议层 ping frame；**服务器重启时** `recoverAdvanceTimers()` 自动恢复 is_playing=1 zone 的 advance 定时器（否则 loop-one/next 失效）
 
 **可调旋钮**：
-- `server/scheduler.mjs` `PRELOAD_MS`（默认 1500，慢端可再调高）
-- `server/scheduler.mjs` `getEffectivePreloadMs(zoneId)`（v2：自动按上报数据动态拉长，无需手动调）
+- `server/scheduler.mjs` `PRELOAD_MS`（默认 800，v4 仅服务音频加载，不再服务时钟缓冲）
+- `server/ws.mjs` `SYNC_TICK_INTERVAL_MS`（默认 200，v4 tick 广播间隔）
 - `server/ws.mjs` `HEARTBEAT_INTERVAL_MS`（默认 10000，协议层 ping 间隔）
 - `server/ws.mjs` `STALE_MS`（默认 30000，僵尸连接阈值）
 - `web/sync.js` `PING_INTERVAL_MS`（默认 2000，可调到 1000 加快收敛）
-- `web/sync.js` `PING_BURST_INTERVAL_MS`（默认 100，收敛期间隔）
 - `web/sync.js` `DRIFT_CHECK_MS`（默认 500，伺服修正周期）
+- `web/sync.js` `DRIFT_DEADBAND_MS`（默认 50，死区内完全不修——iOS 蓝牙/AirPods 延迟需 ≥50）
+- `web/sync.js` `DRIFT_EMA_ALPHA`（默认 0.3，drift EMA 平滑因子，~1.5-2s 收敛）
 - `web/sync.js` `RATE_SERVO_ENABLED`（默认 true；**现场若疑有爆音置 false 一键回退纯 seek 模式**）
-- `web/sync.js` `RATE_SERVO_MAX`（默认 0.015 = ±1.5% 速率上限 ≈26 音分封顶）
-- `web/sync.js` `RATE_SERVO_HORIZON_S`（默认 8，伺服收敛时间常数）
-- `web/sync.js` `DRIFT_DEADBAND_MS`（默认 30，死区内完全不修）
+- `web/sync.js` `RATE_SERVO_MAX`（默认 0.025 = ±2.5% ≈43 音分，平衡收敛速度与 iOS 平滑度）
+- `web/sync.js` `RATE_SERVO_HORIZON_S`（默认 4，伺服收敛时间常数）
+- `web/sync.js` `RATE_HYSTERESIS`（默认 0.003，rate 变化 < 0.3% 不赋值，防 iOS 微卡顿）
+- `web/sync.js` `PLAY_GRACE_MS`（默认 5000，play 后 5s 内不硬 seek，让 servo 消化加载延迟）
 - `web/sync.js` `SEEK_THRESHOLD_MS`（默认 500，硬 seek 只做最后手段）
 - `web/sync.js` `SEEK_COOLDOWN_MS`（默认 2000 兜底，seeked 事件会提前到 +300ms）
 - `web/sync.js` `MAX_DRIFT_SEEKS`（默认 10，同曲 seek 上限防风暴）
-- `web/sync.js` `MIN_BUFFER_FOR_SEEK_MS`（默认 800，缓冲低于此值不 seek，starve 比不同步更差）
+- `web/sync.js` `MIN_BUFFER_FOR_SEEK_MS`（默认 1000，缓冲低于此值不 seek，starve 比不同步更差）
 
 ## 6. 验证流程
 

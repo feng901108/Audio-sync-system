@@ -122,19 +122,23 @@ projectedOffsetMs  = snap.trackOffsetMs + max(0, newStart - snap.startServerTime
 | v2 | ±0.5% playbackRate 微调(200ms 阶跃) | 蓝牙/外置 DAC 上有可闻咔嗒声(当年归因 DAC 重锁,§5.2 已更正:实为 WSOLA 伪影) |
 | v3 | ±0.3% playbackRate + 1500ms 长持续 | 同上 |
 | v4 | 完全去掉 playbackRate,单阈值 100ms seek | 每次修正都是 seek=可闻断口;Safari currentTime 噪声频繁误触发(§5.10 反馈环 + §5.11) |
-| **v5(当前)** | **微速率伺服 + 插值位置时钟 + seek 仅兜底**(§5.11) | Snapcast/Sonos/AirPlay 同款架构 |
+| v5 | 微速率伺服 + 插值位置时钟 + seek 仅兜底(§5.11) | Snapcast/Sonos/AirPlay 同款架构,但 `startServerTime` 单向开环在长时间后累积偏差 |
+| **v6(当前,代码中叫 v4/v4.1)** | **Server tick-driven + EMA drift 平滑 + play grace**(见下) | 借鉴 Shairport Sync 真理源模型,每 200ms 服务端广播位置 |
 
-**当前方案**(`web/sync.js`):
+**当前方案**(`web/sync.js`, v4.1):
 
 ```js
 每 0.5s 检查一次:
   actualSec   = 插值位置时钟(currentTime 变化记锚点 + monotonic 外推,精度 ~5-10ms)
-  expectedSec = (serverNow() - startServerTime)/1000 + trackOffsetMs/1000 + outputLatency
+  expectedSec = lastSyncPositionMs/1000 + elapsed_since_tick/1000 + outputLatency
+                (来自服务端 200ms sync tick, 不再用 startServerTime 推算)
   driftMs     = (actualSec - expectedSec) * 1000
+  smoothDrift = EMA(driftMs, α=0.3)               // 滤除网络抖动/tick 丢失尖刺
 
-  if |driftMs| ≤ 30:           不动(死区,回正 rate=1)
-  elif |driftMs| < 500:        playbackRate = 1 + clamp(-drift/8s, ±1.5%)   // 伺服,无断口
-  else:                        硬 seek 到 expectedSec(缓冲守卫 + 同曲上限 + seeked 事件结束冷却)
+  if |smoothDrift| ≤ 50:       不动(死区)
+  elif |smoothDrift| < 500:    playbackRate = 1 + clamp(-smoothDrift/4s, ±2.5%)
+                               但 |rate变化| < 0.3% 不赋值(iOS 迟滞)
+  else (且不在 play grace):    硬 seek(play 后 5s 内不硬 seek,让 servo 消化加载延迟)
 ```
 
 **为什么伺服而不是 seek**: seek 必然产生 20-300ms 可闻断口(解码器 flush + 重新定位);±1.5% 纯重采样速率偏移 ≈26 音分封顶,BGM 场景无感。80ms 漂移 ~8.5s 收敛、零断口。
@@ -216,28 +220,31 @@ mode = "loop-all"    → 队头 + 当前曲移到队尾
 
 | 参数 | 值 | 位置 | 说明 |
 |---|---|---|---|
-| `PRELOAD_MS` | 1500 | `server/scheduler.mjs` | 服务端预约起播延迟预算 |
+| `PRELOAD_MS` | 800 | `server/scheduler.mjs` | v4: 1500→800。tick-driven 后只剩音频加载需求 |
+| `SYNC_TICK_INTERVAL_MS` | 200 | `server/ws.mjs` | v4: 服务端 sync tick 广播间隔(±25ms 抖动) |
 | `PING_INTERVAL_MS` | 2000 | `web/sync.js` | 时钟同步周期 |
 | `PING_BURST_COUNT` | 5 | 同上 | 收敛期连发数 |
 | `PING_BURST_INTERVAL_MS` | 100 | 同上 | 收敛期间隔 |
 | 时钟采样窗口 | 10 | 同上 | 最近 N 次采样 |
 | 最小 RTT 取数 | 3 | 同上 | 用于算 offset 中位数 |
 | `DRIFT_CHECK_MS` | 500 | 同上 | 伺服修正周期 |
-| `DRIFT_DEADBAND_MS` | 30 | 同上 | v5:死区,以下不修（追噪声无意义） |
-| `RATE_SERVO_ENABLED` | true | 同上 | v5:伺服开关（疑爆音时置 false 一键回退） |
-| `RATE_SERVO_MAX` | 0.015 | 同上 | v5:速率偏移上限 ±1.5%（≈26 音分封顶） |
-| `RATE_SERVO_HORIZON_S` | 8 | 同上 | v5:伺服收敛时间常数 |
-| `SEEK_THRESHOLD_MS` | 500 | 同上 | v5:硬 seek 仅兜底大错位 |
-| `SEEK_COOLDOWN_MS` | 2000 | 同上 | seek 后冷却兜底（seeked 事件提前到 +300ms） |
-| `MAX_DRIFT_SEEKS` | 10 | 同上 | 同曲漂移 seek 上限（防 clock / currentTime 异常导致自激卡顿） |
-| `MIN_BUFFER_FOR_SEEK_MS` | 800 | 同上 | 缓冲低于此值不 seek（starve 比不同步更差） |
+| `DRIFT_DEADBAND_MS` | 50 | 同上 | v4.1: 30→50。iOS 蓝牙/AirPods 延迟需 ≥50 |
+| `DRIFT_EMA_ALPHA` | 0.3 | 同上 | v4.1: drift EMA 平滑因子,~1.5-2s 收敛 |
+| `RATE_SERVO_ENABLED` | true | 同上 | 伺服开关(疑爆音时置 false 一键回退) |
+| `RATE_SERVO_MAX` | 0.025 | 同上 | v4.1: 0.015→0.025 (±2.5% ≈43 音分) |
+| `RATE_SERVO_HORIZON_S` | 4 | 同上 | v4.1: 8→4,target 4s 消化漂移 |
+| `RATE_HYSTERESIS` | 0.003 | 同上 | v4.1: rate 变化 < 0.3% 不赋值,防 iOS 微卡顿 |
+| `PLAY_GRACE_MS` | 5000 | 同上 | v4.1: play 后 5s 内不硬 seek |
+| `SEEK_THRESHOLD_MS` | 500 | 同上 | 硬 seek 仅兜底大错位 |
+| `SEEK_COOLDOWN_MS` | 2000 | 同上 | seek 后冷却兜底(seeked 事件提前到 +300ms) |
+| `MAX_DRIFT_SEEKS` | 10 | 同上 | 同曲漂移 seek 上限 |
+| `MIN_BUFFER_FOR_SEEK_MS` | 1000 | 同上 | v4: 800→1000,缓冲低于此值不 seek |
 | `STALE_MS` | 30000 | `server/ws.mjs` | 清理僵尸连接(>30s 无帧) |
 | `SWEEP_INTERVAL_MS` | 5000 | 同上 | 服务端扫描间隔 |
-| `HEARTBEAT_INTERVAL_MS` | 10000 | 同上 | v2:协议层 WS ping 间隔(早发现半开连接) |
-| `HEARTBEAT_GRACE_MS` | 12000 | 同上 | v2:客户端相邻心跳最大间隔(超此值视作服务端异常) |
-| `effectivePreloadMs` | 动态 | `server/scheduler.mjs` | v2:按 zone 内最慢设备 loadedMs ×2 + 500 动态拉长 |
-| volume ramp duration | 100ms | `web/sync.js` | v2:音量变更平滑过渡(避免蓝牙/外置 DAC 阶跃咔声) |
-| onerror retry delay | 1000ms | 同上 | v2:播放器报错后 1s 重试当前 offset(不是 seekTo(0)) |
+| `HEARTBEAT_INTERVAL_MS` | 10000 | 同上 | 协议层 WS ping 间隔 |
+| `HEARTBEAT_GRACE_MS` | 12000 | 同上 | 客户端相邻心跳最大间隔 |
+| volume ramp duration | 100ms | `web/sync.js` | 音量变更平滑过渡(蓝牙/外置 DAC 阶跃咔声) |
+| onerror retry delay | 1000ms | 同上 | 播放器报错后 1s 重试当前 offset |
 
 ---
 
@@ -463,8 +470,8 @@ scheduler.next(zoneId)
 | 关注点 | 看哪个文件 | 关键段 |
 |---|---|---|
 | 客户端全套参考实现 | `web/sync.js` | `SyncClient`(_handle / _startTrack / _drift / volume ramp / onerror retry / iOS unlock) |
-| 服务端 WS 协议 + 中途加入投影 | `server/ws.mjs` | `handleUpgrade` / `hub.pingAll` / `recordLoadedMs` |
-| 播放状态机 + 模式 + 调度 advance | `server/scheduler.mjs` | `play` / `getEffectivePreloadMs` / `scheduleAdvance` |
+| 服务端 WS 协议 + sync tick + 中途加入 | `server/ws.mjs` | `handleUpgrade` / `hub.broadcastSyncToZone` / `hub.startSyncTicks` / `hub.pingAll` |
+| 播放状态机 + 模式 + 调度 advance | `server/scheduler.mjs` | `play` / `snapshotForSync` / `scheduleAdvance` / `recoverAdvanceTimers` |
 | 音频流 + Range + 缓存 | `server/index.mjs` | `serveStatic`(206 / ETag / immutable / Range 容错) |
 | WS Hub + Zone 隔离 | `server/ws.mjs` | `Hub` 类 |
 | iOS 诊断 UI | `web/index.html` | `.diag` / `.ios-banner` / 解锁按钮 |

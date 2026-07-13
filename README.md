@@ -180,11 +180,11 @@ juguang/
 服务端调度器是事实唯一来源。客户端只听命令，不传时钟。
 
 1. **NTP 风格时钟同步**：每 2s 客户端 ping 服务端，取最近 10 次 RTT 最小 3 次的 offset 中位数作为本地-服务端时钟差。
-2. **预约调度**：`play` 命令带 `startServerTime = now + PRELOAD_MS`（默认 1500ms 预加载缓冲），客户端换算到本地时刻精确 `start()`。
-3. **漂移修正（v3 微速率伺服）**：每 0.5s 用插值位置时钟（消除 Safari currentTime 250ms 量化噪声）比对预期位置（含 outputLatency 补偿）：|drift| ≤ 30ms 死区不动；30–500ms 用 ±1.5% playbackRate 伺服渐进收敛——`preservesPitch=false` 纯重采样，≈26 音分封顶无感（Snapcast/Sonos/AirPlay 多房间系统的标准做法）；≥500ms 才硬 seek（最后手段，带缓冲守卫 + 同曲 10 次上限）。v3 更正历史误诊：v1 "playbackRate 咯噔声"的机理是 WSOLA 时间拉伸伪影（preservesPitch 默认 true）+ 速率硬切换，不是 DAC 重锁——playbackRate 从不改变输出流的采样率/格式。
-4. **中途加入**：新连接拿到 snapshot 时算投影位置 + 新 `startServerTime`，避免进度跳变。
-5. **慢设备自适应**（v2）：客户端上报 `reportLoaded { loadedMs }`，服务端按 zone 内最慢设备 ×2 + 500ms 动态拉长 `effectivePreloadMs`，避免快设备抢跑 / 慢设备漏 buffer。
-6. **协议层心跳**（v2）：服务端每 10s 发 WS ping frame（opcode 0x9），比 sweep（30s 阈值）更早发现"半开连接"——TCP 没 RST 但 VPN/路由器/4G 切换的场景。
+2. **Server tick-driven 位置同步（v4）**：服务端每 200ms ± 25ms 广播 `{type:"sync", positionMs, serverNow, isPlaying}` 给所有 v4 客户端；play/pause/seek 后立即补发一个 tick。客户端用最新 tick + monotonic 外推得到 expected position（替代 v3 的 `startServerTime` 单向开环模型）。
+3. **漂移修正（v4.1 EMA + rate servo）**：每 0.5s 用插值位置时钟（消除 Safari currentTime 250ms 量化噪声）比对预期位置（含 outputLatency 补偿）：EMA 平滑 drift（α=0.3）→ 死区 50ms 内不动 → 50–500ms 用 ±2.5% playbackRate 伺服渐进收敛（`preservesPitch=false` 纯重采样 ≈43 音分封顶，rate 变化迟滞 0.3% 防 iOS 微卡顿）→ ≥500ms 硬 seek（play 后 5s grace 期间不硬 seek，让 servo 消化加载延迟）。
+4. **中途加入**：新连接拿到 snapshot 时算投影位置，紧跟一个 sync tick 让客户端立即拿到位置锚点。
+5. **服务器重启恢复**：`recoverAdvanceTimers()` 在启动时扫描 DB 中 `is_playing=1` 的 zone，重建 `scheduleAdvance` 定时器，保证 loop-one/loop-all/sequential next 在 Docker rebuild 后不失效。
+6. **协议层心跳**：服务端每 10s 发 WS ping frame（opcode 0x9），比 sweep（30s 阈值）更早发现"半开连接"。
 
 ### 音频缓存策略
 
@@ -213,14 +213,13 @@ iOS Safari 有几个硬性限制，前端做了针对性处理：
 
 诊断面板（`/` 页右下"诊断"折叠）实时显示：`AudioContext` 状态 / 缓冲 ahead（`X.Xs` 或 `0（缓冲耗尽）`）/ seek 次数 / MediaError 码（1=中止 2=网络 3=解码 4=不支持）/ 设备类型。卡顿时第一眼看到根因，不用猜。
 
-可调旋钮：
-- `server/scheduler.mjs` `PRELOAD_MS`（默认 1500，慢端可再调高）
-- `server/scheduler.mjs` `getEffectivePreloadMs(zoneId)`（v2：自动按上报数据动态拉长）
-- `server/ws.mjs` `HEARTBEAT_INTERVAL_MS`（默认 10000，协议层 ping 间隔）
-- `server/ws.mjs` `STALE_MS`（默认 30000，僵尸连接阈值）
-- `web/sync.js` `PING_INTERVAL_MS`（默认 2000，可调到 1000 加快收敛）
-- `web/sync.js` `DRIFT_CHECK_MS`（默认 1500，更小更平滑但 CPU 多）
-- `web/sync.js` `SEEK_THRESHOLD_MS`（默认 100，漂移超过才 seek，调小=更频繁修齐；调大=接受更大相位差）
+可调旋钮（完整列表见 CLAUDE.md §5）：
+- `server/scheduler.mjs` `PRELOAD_MS`（默认 800，v4 仅服务音频加载）
+- `server/ws.mjs` `SYNC_TICK_INTERVAL_MS`（默认 200，v4 tick 广播间隔）
+- `web/sync.js` `DRIFT_DEADBAND_MS`（默认 50）、`DRIFT_EMA_ALPHA`（默认 0.3）
+- `web/sync.js` `RATE_SERVO_MAX`（默认 0.025 = ±2.5%）、`RATE_HYSTERESIS`（默认 0.003）
+- `web/sync.js` `PLAY_GRACE_MS`（默认 5000，play 后不硬 seek 的宽限期）
+- `web/sync.js` `SEEK_THRESHOLD_MS`（默认 500，硬 seek 阈值）
 
 ## 设计
 

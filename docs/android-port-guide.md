@@ -3,6 +3,8 @@
 > **愿景**：网页 `/admin` 作总控制台（选歌 / 队列 / 分区 / 模式 / 设备音量），安卓设备装上 app 后**自动加入指定分区、自动同步播放**，无需任何手动对齐。
 >
 > **本文档面向**：后续开发安卓 TV 版、安卓手机版 app 的开发者（人或 AI）。目标是能据此复用现有协议与算法，不重设计、不碰服务端。
+>
+> **⚠️ v4.1 更新提示（2026-07-12）**：Web 端已从 v3 的 `startServerTime` 单向开环模型升级为 v4 的 **server tick-driven** 模型——服务端每 200ms 广播 `{type:"sync", positionMs, serverNow}`，客户端用 tick 锚点 + monotonic 外推得到 expected position。本文的 `startServerTime` 相关描述仍适用于理解协议，但 **原生 App 开发建议直接对接 v4 sync tick**（客户端 `register` 时发 `supportsSyncTicks: true`）。v4 架构详见项目记忆 `sync-architecture-v4.md`，原生 App 硬件时钟路线（AudioTrack.getTimestamp / AVAudioEngine.lastRenderTime / PTP）也记录在其中。
 
 ---
 
