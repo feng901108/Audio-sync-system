@@ -22,7 +22,13 @@ keystore/*.keystore
 .DS_Store
 Thumbs.db
 
-# === 临时文件 ===
+# === Hermes session 文档（不进仓, 在主仓 .gitignore 覆盖）===
+# .hermes/
+
+
 *.log
 *.bak
 *.tmp
+
+# === OTA APK 发布目录在仓库根, 不进 git（放 NAS / CDN）===
+# 默认服务端用 ../apk/ 发布 OTA, 本机测试可手动放文件

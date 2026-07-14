@@ -221,6 +221,12 @@ route("GET", "/api/health", async (_req, res) => {
   sendJson(res, 200, { ok: true, serverTime: Date.now(), port: PORT, serverIps: getServerIps() });
 });
 
+// OTA: 版本查询
+import { getVersionJson } from "./version.mjs";
+route("GET", "/api/version", async (_req, res) => {
+  sendJson(res, 200, getVersionJson());
+});
+
 route("GET", "/api/tracks", async (_req, res) => {
   const rows = db.prepare("SELECT * FROM tracks ORDER BY uploaded_at DESC").all();
   sendJson(res, 200, { tracks: rows.map((r) => ({ ...r, duration_ms: Number(r.duration_ms), size_bytes: Number(r.size_bytes), uploaded_at: Number(r.uploaded_at) })) });

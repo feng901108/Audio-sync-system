@@ -25,3 +25,9 @@ Screenshot*.png
 # 临时对比/备份包（不进 git）
 *.tar.gz
 
+# OTA APK 发布目录（不进 git；放 NAS / CDN 单独管）
+/apk/
+
+# Hermes session 文档（不进仓；plan / verify / logs）
+.hermes/
+

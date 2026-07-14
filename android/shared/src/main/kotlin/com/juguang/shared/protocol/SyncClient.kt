@@ -145,6 +145,11 @@ class SyncClient(
         send(json.encodeToString(ReportLoadedMsg.serializer(), msg))
     }
 
+    fun reportVolume(volume: Float) {
+        val msg = SetVolumeMsg(volume = volume.coerceIn(0f, 1f))
+        send(json.encodeToString(SetVolumeMsg.serializer(), msg))
+    }
+
     private fun handleMessage(text: String) {
         try {
             val obj = json.parseToJsonElement(text).jsonObject
