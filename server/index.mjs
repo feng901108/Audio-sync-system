@@ -594,6 +594,18 @@ const server = createServer(async (req, res) => {
       return serveStatic(req, res, resolve(AUDIO_DIR, name));
     }
 
+    // OTA: APK 下载
+    if (pathname.startsWith("/apk/") && req.method === "GET") {
+      const name = pathname.slice("/apk/".length);
+      if (name.includes("..") || name.includes("/")) return send(res, 400, "bad path");
+      const apkPath = resolve(ROOT, "apk", name);
+      // 防越界: 必须落在 <ROOT>/apk 内
+      const apkDir = resolve(ROOT, "apk");
+      if (!apkPath.startsWith(apkDir)) return send(res, 400, "bad path");
+      if (!existsSync(apkPath)) return send(res, 404, "apk not found");
+      return serveStatic(req, res, apkPath);
+    }
+
     if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, "Method not allowed");
 
     if (pathname === "/" || pathname === "/index.html") return serveStatic(req, res, resolve(WEB_DIR, "index.html"));

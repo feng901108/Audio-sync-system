@@ -1,11 +1,10 @@
-// 版本信息 - OTA 升级用
-// 升级流程: 改这里的 VERSION_CODE, 把新 APK 放到 web/apk/ 目录, app 端启动时会自动查
+﻿// 鐗堟湰淇℃伅 - OTA 鍗囩骇鐢?// 鍗囩骇娴佺▼: 鏀硅繖閲岀殑 VERSION_CODE, 鎶婃柊 APK 鏀惧埌 web/apk/ 鐩綍, app 绔惎鍔ㄦ椂浼氳嚜鍔ㄦ煡
 export const VERSION_CODE = 2;
 export const VERSION_NAME = "0.2.0";
 export const APK_FILENAME = `juguang-${VERSION_NAME}.apk`;
 
 /**
- * GET /api/version 返回内容
+ * GET /api/version 杩斿洖鍐呭
  */
 export function getVersionJson() {
     return {
