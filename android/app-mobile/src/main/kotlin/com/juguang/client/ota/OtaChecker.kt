@@ -1,8 +1,7 @@
 package com.juguang.client.ota
 
-import android.content.Context
 import android.util.Log
-import com.juguang.shared.protocol.BuildMeta
+import com.juguang.client.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -48,8 +47,8 @@ object OtaChecker {
                 val body = resp.body?.string() ?: return@withContext null
                 val j = JSONObject(body)
                 val remoteCode = j.optInt("versionCode", 0)
-                if (remoteCode <= BuildMeta.VERSION_CODE) {
-                    Log.i(TAG, "no update (local=${BuildMeta.VERSION_CODE}, remote=$remoteCode)")
+                if (remoteCode <= BuildConfig.VERSION_CODE) {
+                    Log.i(TAG, "no update (local=${BuildConfig.VERSION_CODE}, remote=$remoteCode)")
                     return@withContext null
                 }
                 UpdateInfo(

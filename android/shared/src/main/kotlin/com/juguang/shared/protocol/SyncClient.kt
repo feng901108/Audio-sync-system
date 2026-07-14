@@ -16,9 +16,42 @@ import java.util.concurrent.TimeUnit
 class SyncClient(
     private val serverUrl: String,
     private val ntpClock: NtpClock,
-    private val listener: SyncListener
+    private val listener: SyncListener,
+    private val mainHandler: android.os.Handler? = null
 ) {
     companion object { private const val TAG = "SyncClient" }
+
+    /**
+     * 所有 listener 通知都切换到主线程 (UI 操作必须在主线程)
+     * 如果外部没传 mainHandler, 用默认 (UI 线程) Looper 创建
+     */
+    private val uiHandler: android.os.Handler = mainHandler
+        ?: android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** 包装 listener: 把回调强制切到主线程 */
+    private val mainListener: SyncListener = object : SyncListener {
+        override fun onConnected(deviceId: String) {
+            uiHandler.post { listener.onConnected(deviceId) }
+        }
+        override fun onDisconnected() {
+            uiHandler.post { listener.onDisconnected() }
+        }
+        override fun onPlay(msg: PlayMsg) {
+            uiHandler.post { listener.onPlay(msg) }
+        }
+        override fun onPause(msg: PauseMsg) {
+            uiHandler.post { listener.onPause(msg) }
+        }
+        override fun onStop(msg: StopMsg) {
+            uiHandler.post { listener.onStop(msg) }
+        }
+        override fun onSetVolume(volume: Float) {
+            uiHandler.post { listener.onSetVolume(volume) }
+        }
+        override fun onError(message: String) {
+            uiHandler.post { listener.onError(message) }
+        }
+    }
 
     interface SyncListener {
         fun onConnected(deviceId: String)
@@ -160,7 +193,7 @@ class SyncClient(
                     val msg = json.decodeFromJsonElement(HelloMsg.serializer(), obj)
                     deviceId = msg.deviceId
                     Log.i(TAG, "Registered: deviceId=${msg.deviceId} zone=${msg.zoneId}")
-                    listener.onConnected(msg.deviceId)
+                    mainListener.onConnected(msg.deviceId)
                 }
                 "pong" -> {
                     val msg = json.decodeFromJsonElement(PongMsg.serializer(), obj)
@@ -169,19 +202,19 @@ class SyncClient(
                 "play", "seek" -> {
                     val msg = json.decodeFromJsonElement(PlayMsg.serializer(), obj)
                     Log.i(TAG, "Play: track=${msg.trackId} start=${msg.startServerTime} offset=${msg.trackOffsetMs}")
-                    listener.onPlay(msg)
+                    mainListener.onPlay(msg)
                 }
                 "pause" -> {
                     val msg = json.decodeFromJsonElement(PauseMsg.serializer(), obj)
-                    listener.onPause(msg)
+                    mainListener.onPause(msg)
                 }
                 "stop" -> {
                     val msg = json.decodeFromJsonElement(StopMsg.serializer(), obj)
-                    listener.onStop(msg)
+                    mainListener.onStop(msg)
                 }
                 "setVolume" -> {
                     val msg = json.decodeFromJsonElement(SetVolumeMsg.serializer(), obj)
-                    listener.onSetVolume(msg.volume)
+                    mainListener.onSetVolume(msg.volume)
                 }
                 "sync" -> {
                     // v4 sync tick - 暂存，v4 合 main 后启用
@@ -206,7 +239,7 @@ class SyncClient(
     private fun onDisconnect() {
         connected = false
         pingJob?.cancel()
-        listener.onDisconnected()
+        mainListener.onDisconnected()
         scheduleReconnect()
     }
 

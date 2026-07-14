@@ -268,11 +268,15 @@ class SyncActivity : Activity(), SyncClient.SyncListener {
     private fun checkOtaInBackground() {
         scope.launch {
             try {
+                Log.i(TAG, "OTA check start, serverUrl=$serverUrl")
                 val update = OtaChecker.check(serverUrl)
                 if (update != null) {
+                    Log.i(TAG, "OTA update found: ${update.versionName}")
                     OtaInstaller.showUpdateDialog(this@SyncActivity, update, serverUrl) {
                         Log.i(TAG, "user accepted install")
                     }
+                } else {
+                    Log.i(TAG, "OTA: no update or check failed silently")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "ota check failed: ${e.message}")

@@ -32,7 +32,7 @@ object OtaInstaller {
         val title = if (info.mandatory) "强制更新" else "发现新版本"
         val msg = buildString {
             append("新版本: ${info.versionName}\n")
-            append("当前: ${com.juguang.shared.protocol.BuildMeta.VERSION_NAME}\n")
+            append("当前: ${com.juguang.client.BuildConfig.VERSION_NAME}\n")
             if (info.notes.isNotBlank()) append("\n${info.notes}")
         }
         AlertDialog.Builder(ctx)
