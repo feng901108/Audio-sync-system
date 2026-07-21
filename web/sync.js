@@ -148,12 +148,10 @@ export class SyncClient {
       // preload="metadata" 只下载头部元数据，靠 Range 按需拉数据流式播放
       // （不用 "auto"——iOS 上 auto 可能预下载整文件，破坏 300MB 白噪音不 OOM 的设计目标）
       this.audio.preload = "metadata";
-      // 纯重采样模式：rate≠1 时不做时间拉伸（WSOLA）。v1 "playbackRate 咯噔声"的
-      // 真实机理是 preservesPitch 默认 true 的 WSOLA 帧拼接伪影 + 1.0↔0.95 硬切换——
-      // 不是 DAC 重锁（playbackRate 从不改变输出流采样率/格式，蓝牙链路 PCM 始终连续）。
-      // 重采样模式下 ±1.5% 只是 ≤26 音分的音高偏移，BGM 无感（Snapcast/Sonos 同款方案）。
-      this.audio.preservesPitch = false;
-      try { this.audio.webkitPreservesPitch = false; } catch {}
+      // 保 pitch 模式：preservesPitch 默认 true，浏览器内置时间拉伸。
+      // ±2.5% 微调范围现代浏览器（Chrome 90+ / Safari 15+）算法足够透明，
+      // 原 v1 遇到的 WSOLA 伪影是针对大范围变速（0.95x），当前伺服仅 ±2.5% 可忽略。
+      // 纯重采样方案（preservesPitch=false）虽无时间拉伸伪影，但人声跑调无法接受。
       // 同源部署不需要 crossOrigin；设了反而要求服务端 CORS 头，跨域缺失会被静音
       this.mediaNode = this.ctx.createMediaElementSource(this.audio);
       this.mediaNode.connect(this.gain);
