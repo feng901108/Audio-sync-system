@@ -94,8 +94,8 @@ class ExoPlayerEngine(
 
     /**
      * 播放速率微调
-     * 关键: 用 PlaybackParameters(speed, speed) 双参版本
-     * speed=pitch=纯重采样，不产生 Sonic 时间拉伸的"陶瓷罐"音
+     * 范围仅 ±1.5%，Sonic 时间拉伸副作用可忽略，保 pitch 优先
+     * 单参 PlaybackParameters(speed) = speed-only, 音高不变
      */
     override fun setPlaybackSpeed(speed: Float) {
         val clamped = speed.coerceIn(
@@ -104,9 +104,8 @@ class ExoPlayerEngine(
         )
         if (kotlin.math.abs(clamped - currentSpeed) < 0.0001f) return
         currentSpeed = clamped
-        // 双参: speed 和 pitch 同步 -> 纯重采样模式
-        player.playbackParameters = PlaybackParameters(clamped, clamped)
-        Log.d(TAG, "setPlaybackSpeed: $clamped (resample mode)")
+        player.playbackParameters = PlaybackParameters(clamped)
+        Log.d(TAG, "setPlaybackSpeed: $clamped (pitch-preserving)")
     }
 
     override val currentPosition: Long
