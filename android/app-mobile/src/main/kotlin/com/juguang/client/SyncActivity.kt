@@ -138,6 +138,12 @@ class SyncActivity : Activity(), SyncClient.SyncListener {
         // 显示同网段可达 IP (从 /api/health 拿)
         showServerHints()
 
+        // 启动时检查 OTA (用已保存的服务端地址)
+        val savedServer = prefs.getString(PREF_SERVER, "")
+        if (!savedServer.isNullOrBlank()) {
+            checkOtaInBackground(savedServer)
+        }
+
         btnJoin.setOnClickListener { onJoinClicked() }
         btnSettings.setOnClickListener { onSettingsClicked() }
         seekVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -219,7 +225,7 @@ class SyncActivity : Activity(), SyncClient.SyncListener {
             .putString(PREF_DEVICE, deviceName)
             .apply()
 
-        btnJoin.text = getString(R.string.join_btn_loading)
+        btnJoin.text = "连接中…"
         btnJoin.isEnabled = false
 
         // 初始化同步层
@@ -231,13 +237,19 @@ class SyncActivity : Activity(), SyncClient.SyncListener {
             connect()
         }
 
-        // 切到 player
-        joinContainer.visibility = View.GONE
-        playerContainer.visibility = View.VISIBLE
-        joined = true
-
-        // 后台检查 OTA
-        checkOtaInBackground()
+        // 不直接切 player——等 onConnected 回调
+        // 超时保护: 10 秒后仍连不上则回 join 页面
+        scope.launch {
+            delay(10_000)
+            if (!connected && !joined) {
+                mainHandler.post {
+                    btnJoin.text = getString(R.string.join_btn)
+                    btnJoin.isEnabled = true
+                    textError.text = "连接超时，请检查服务端地址和网络"
+                    textError.visibility = View.VISIBLE
+                }
+            }
+        }
     }
 
     private fun onSettingsClicked() {
@@ -265,14 +277,14 @@ class SyncActivity : Activity(), SyncClient.SyncListener {
 
     // ============ OTA ============
 
-    private fun checkOtaInBackground() {
+    private fun checkOtaInBackground(url: String = serverUrl) {
         scope.launch {
             try {
-                Log.i(TAG, "OTA check start, serverUrl=$serverUrl")
-                val update = OtaChecker.check(serverUrl)
+                Log.i(TAG, "OTA check start, serverUrl=$url")
+                val update = OtaChecker.check(url)
                 if (update != null) {
                     Log.i(TAG, "OTA update found: ${update.versionName}")
-                    OtaInstaller.showUpdateDialog(this@SyncActivity, update, serverUrl) {
+                    OtaInstaller.showUpdateDialog(this@SyncActivity, update, url) {
                         Log.i(TAG, "user accepted install")
                     }
                 } else {
@@ -288,6 +300,12 @@ class SyncActivity : Activity(), SyncClient.SyncListener {
 
     override fun onConnected(deviceId: String) {
         connected = true
+        joined = true
+
+        // 切到 player 页面
+        joinContainer.visibility = View.GONE
+        playerContainer.visibility = View.VISIBLE
+
         textDevice.text = "$deviceName · ${deviceId.take(6)}"
         statusDot.setBackgroundResource(R.drawable.dot_ok)
         textStatus.text = getString(R.string.status_connected)
@@ -295,10 +313,23 @@ class SyncActivity : Activity(), SyncClient.SyncListener {
         textZone.visibility = View.VISIBLE
         startDriftLoop()
         startProgressLoop()
+
+        // 连接成功后检查 OTA
+        checkOtaInBackground(serverUrl)
     }
 
     override fun onDisconnected() {
         connected = false
+        if (!joined) {
+            // 初始连接失败——回 join 页面
+            mainHandler.post {
+                btnJoin.text = getString(R.string.join_btn)
+                btnJoin.isEnabled = true
+                textError.text = "连接失败，请检查服务端地址"
+                textError.visibility = View.VISIBLE
+            }
+            return
+        }
         statusDot.setBackgroundResource(R.drawable.dot_warn)
         textStatus.text = getString(R.string.status_disconnected)
         stopAlbumSpin()
