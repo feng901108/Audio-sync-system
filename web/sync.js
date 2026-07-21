@@ -50,6 +50,7 @@ export class SyncClient {
     // （createMediaElementSource 每个 audio 元素只能调一次，故元素与节点一一复用）
     this.audio = null;
     this.mediaNode = null;
+    this.workletNode = null;   // AudioWorkletNode (相位声码器时间拉伸)
     this.currentTrackId = null;
     this.currentTrackUrl = null;
     this.currentDurationMs = 0;
@@ -72,6 +73,7 @@ export class SyncClient {
     this._lastPongAt = 0;       // 最近一次收到 pong 的 monotonic 时间戳
     this._reconnectAttempt = 0; // WS 重连退避计数（每次 onclose 自增）
     this._driftSeeksThisTrack = 0; // 当前曲目漂移 seek 计数（同曲超 MAX_DRIFT_SEEKS 停 seek）
+    this._stretchRatio = 1;      // 当前相位声码器拉伸比（1=正常, 0.975-1.025）
     this._posAnchorRaw = -1;    // 插值位置时钟锚点：currentTime 最近一次"变化"的值
     this._posAnchorAt = 0;      //   及其 monotonic 时刻。Safari currentTime 每 ~250ms 才步进，
     //   锚点 + 外推可把位置精度从 ±125ms 提到 ~5-10ms（视频播放器字幕同步的标准手法）
@@ -148,13 +150,25 @@ export class SyncClient {
       // preload="metadata" 只下载头部元数据，靠 Range 按需拉数据流式播放
       // （不用 "auto"——iOS 上 auto 可能预下载整文件，破坏 300MB 白噪音不 OOM 的设计目标）
       this.audio.preload = "metadata";
-      // 保 pitch 模式：preservesPitch 默认 true，浏览器内置时间拉伸。
-      // ±2.5% 微调范围现代浏览器（Chrome 90+ / Safari 15+）算法足够透明，
-      // 原 v1 遇到的 WSOLA 伪影是针对大范围变速（0.95x），当前伺服仅 ±2.5% 可忽略。
-      // 纯重采样方案（preservesPitch=false）虽无时间拉伸伪影，但人声跑调无法接受。
+      // 相位声码器 AudioWorklet：保 pitch 时间拉伸，替代浏览器内置 preservesPitch
+      // ±2.5% 微调范围 FFT 2048 + Hann 窗 + IPL 立体声锁相，人声保真度远优于浏览器 WSOLA
       // 同源部署不需要 crossOrigin；设了反而要求服务端 CORS 头，跨域缺失会被静音
       this.mediaNode = this.ctx.createMediaElementSource(this.audio);
-      this.mediaNode.connect(this.gain);
+      try {
+        await this.ctx.audioWorklet.addModule("/worklet/time-stretch-processor.js");
+        this.workletNode = new AudioWorkletNode(this.ctx, "time-stretch", {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+        });
+        this.mediaNode.connect(this.workletNode);
+        this.workletNode.connect(this.gain);
+      } catch (e) {
+        // AudioWorklet 不可用时回退直连（不保 pitch，但功能不崩）
+        console.warn("[sync] AudioWorklet unavailable, direct path:", e?.message);
+        this.mediaNode.connect(this.gain);
+        this.workletNode = null;
+      }
       // 自然播完：等服务端 scheduleAdvance 下发 next/loop-one 重播，不主动改状态避免竞争
       this.audio.onended = () => {};
       // 加载/解码失败自动恢复：网络断开一瞬或文件 404 时不要让 UI 卡在"播放中"实际没声
@@ -497,7 +511,7 @@ export class SyncClient {
         this._reportLoadedMs(this._lastLoadedMs);
       }
       try { this.audio.currentTime = Math.max(0, trackOffsetMs / 1000); } catch {}
-      try { this.audio.playbackRate = 1; } catch {} // 新一轮起播回正伺服速率
+      this._setStretchRatio(1); // 新一轮起播回正伺服速率
       this._posAnchorRaw = -1; // 位置锚点作废，seeked/playing 事件里重建
       // v4 (Phase E): 用 monotonic _now() 作锚点（统一时钟域，避免 Date.now() 与 monotonic-derived clockOffset 混合在 NTP 步进时偏差）
       const localTargetMs = _now() - this._clockOffset();
@@ -558,7 +572,7 @@ export class SyncClient {
     if (this.pauseTimer) { clearTimeout(this.pauseTimer); this.pauseTimer = null; }
     if (this.audio) {
       try { this.audio.pause(); } catch {}
-      try { this.audio.playbackRate = 1; } catch {} // 停止时回正伺服速率
+      this._setStretchRatio(1); // 停止时回正伺服速率
       if (clearBuffer) {
         try {
           this.audio.currentTime = 0;
@@ -577,6 +591,17 @@ export class SyncClient {
     this._errorRetries = 0;
     this.isPlaying = false;
     this._update({ isPlaying: false, mediaErrorCode: this.audio?.error?.code ?? 0 });
+  }
+
+  /** 设置相位声码器拉伸比，内置迟滞避免频繁切换 */
+  _setStretchRatio(rate) {
+    if (Math.abs(this._stretchRatio - rate) < RATE_HYSTERESIS) return;
+    this._stretchRatio = rate;
+    if (this.workletNode) {
+      try {
+        this.workletNode.parameters.get("stretchRatio").value = rate;
+      } catch {}
+    }
   }
 
   // v4 (Phase C): 基于最新 sync tick + monotonic 外推得到 expected position
@@ -637,7 +662,7 @@ export class SyncClient {
     const seekThreshold = this._softDriftMode ? SEEK_THRESHOLD_MS * 3 : SEEK_THRESHOLD_MS;
     if (RATE_SERVO_ENABLED && (abs < seekThreshold || inPlayGrace)) {
       // v4.1: EMA 平滑 drift — 网络抖动 / tick 丢失会让原始 drift 跳变 ±30ms，
-      // 不平滑的话 rate 每 500ms 抖动一次，iOS Safari 每次 playbackRate 赋值有微断口。
+      // 不平滑的话 rate 每 500ms 抖动一次，频繁切 AudioWorklet stretchRatio 产生微断口。
       this._smoothDriftMs = DRIFT_EMA_ALPHA * driftMs + (1 - DRIFT_EMA_ALPHA) * this._smoothDriftMs;
       const smoothAbs = Math.abs(this._smoothDriftMs);
       let rate = 1;
@@ -646,11 +671,9 @@ export class SyncClient {
         const corr = Math.max(-RATE_SERVO_MAX, Math.min(RATE_SERVO_MAX, -(this._smoothDriftMs / 1000) / RATE_SERVO_HORIZON_S));
         rate = 1 + Math.round(corr * 1000) / 1000;
       }
-      // v4.1: rate 迟滞 — delta < RATE_HYSTERESIS 不赋值，防止 iOS 重采样器频繁微调卡顿
-      if (Math.abs(this.audio.playbackRate - rate) >= RATE_HYSTERESIS) {
-        try { this.audio.playbackRate = rate; } catch {}
-      }
-      patch.playbackRate = this.audio.playbackRate;
+      // v4.1: rate 迟滞 — delta < RATE_HYSTERESIS 不赋值，避免频繁切换产生微断口
+      this._setStretchRatio(rate);
+      patch.playbackRate = rate;
     } else if (abs >= seekThreshold) {
       // 硬 seek = 最后手段：只处理大错位（网络卡死恢复/标签页冻结唤醒/伺服关闭时）。
       // 同曲上限：超限说明时钟或音频引擎异常，继续 seek 只会更卡（不再自增 seekCount 免得吓人）。
@@ -661,7 +684,7 @@ export class SyncClient {
       this._driftSeeksThisTrack++;
       this._seekCooldownUntil = _now() + SEEK_COOLDOWN_MS;
       this._smoothDriftMs = 0; // seek 跳到正确位置后 EMA 归零
-      try { this.audio.playbackRate = 1; } catch {} // seek 前回正伺服速率
+      this._setStretchRatio(1); // seek 前回正伺服速率
       patch.playbackRate = 1;
       patch.seekCount = (this.status.seekCount ?? 0) + 1;
       _log(`seek #${patch.seekCount}: drift=${Math.round(driftMs)}ms audio=${actualSec.toFixed(2)}s expected=${expectedSec.toFixed(2)}s bufferedAhead=${bufferAheadMs}ms`);
@@ -688,7 +711,7 @@ export class SyncClient {
     if (this.audio.paused) return raw;
     const dt = (now - this._posAnchorAt) / 1000;
     if (dt > 0.6) return raw;
-    return raw + dt * (this.audio.playbackRate || 1);
+    return raw + dt * (this._stretchRatio || 1);
   }
 
   // 源缓冲前瞻：buffered.end(last) - currentTime，单位 ms。
