@@ -135,14 +135,14 @@ class SyncActivity : Activity(), SyncClient.SyncListener {
             editDevice.setText(savedName)
         }
 
-        // 显示同网段可达 IP (从 /api/health 拿)
-        showServerHints()
-
-        // 启动时检查 OTA (用已保存的服务端地址)
-        val savedServer = prefs.getString(PREF_SERVER, "")
-        if (!savedServer.isNullOrBlank()) {
-            checkOtaInBackground(savedServer)
-        }
+        // 延迟初始化：避免冷启动时网络 IO 抢占导致 ANR
+        mainHandler.postDelayed({
+            // OTA 检查 (用已保存的服务端地址)
+            val savedServer = prefs.getString(PREF_SERVER, "")
+            if (!savedServer.isNullOrBlank()) {
+                checkOtaInBackground(savedServer)
+            }
+        }, 1000)
 
         btnJoin.setOnClickListener { onJoinClicked() }
         btnSettings.setOnClickListener { onSettingsClicked() }
