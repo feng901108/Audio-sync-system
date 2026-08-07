@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta name="theme-color" content="#000">
+  <title>PiliPark Music · 正在播放</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; overflow: hidden; background: #000; color: #f5f2ec;
+      font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      -webkit-font-smoothing: antialiased; touch-action: manipulation; }
+
+    /* ── 舞台 ── */
+    #stage { position: fixed; inset: 0; background: #000; overflow: hidden;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom));
+      gap: 0;
+    }
+
+    /* ── 极光流动背景 ── */
+    #aurora { position: absolute; inset: -20%; opacity: 0; transition: opacity 1.5s ease; z-index: 0; pointer-events: none; }
+    #aurora.active { opacity: 1; }
+    #aurora::before, #aurora::after { content: ''; position: absolute; inset: 0; }
+    #aurora::before {
+      background:
+        radial-gradient(50% 50% at 30% 30%, rgba(232,192,125,0.4), transparent 70%),
+        radial-gradient(50% 50% at 70% 40%, rgba(180,120,200,0.35), transparent 70%),
+        radial-gradient(50% 50% at 50% 70%, rgba(80,160,220,0.3), transparent 70%);
+      filter: blur(40px); animation: aurora-rot 12s linear infinite;
+    }
+    #aurora::after {
+      background:
+        radial-gradient(40% 40% at 65% 25%, rgba(255,160,100,0.3), transparent 70%),
+        radial-gradient(45% 45% at 25% 65%, rgba(120,200,160,0.25), transparent 70%);
+      filter: blur(50px); animation: aurora-rot-rev 16s linear infinite;
+    }
+    @keyframes aurora-rot { to { transform: rotate(360deg) scale(1.2); } }
+    @keyframes aurora-rot-rev { to { transform: rotate(-360deg) scale(1.15); } }
+
+    /* ── 封面模糊背景 ── */
+    #bg { position: absolute; inset: -10%; filter: blur(60px) saturate(1.5) brightness(0.5);
+      opacity: 0; transition: opacity 1.5s ease; z-index: 0; transform: scale(1.3);
+      animation: bg-pan 20s ease-in-out infinite alternate; pointer-events: none; }
+    #bg.active { opacity: 0.7; }
+    @keyframes bg-pan { to { transform: scale(1.35) translate(-2%, 2%); } }
+
+    /* ── 点击层 ── */
+    #clicker { position: absolute; inset: 0; z-index: 99; cursor: pointer; }
+
+    /* ── 顶部栏：品牌 + 状态 ── */
+    #topbar { position: absolute; top: max(18px, env(safe-area-inset-top)); left: 0; right: 0;
+      z-index: 5; display: flex; justify-content: space-between; align-items: center;
+      padding: 0 24px; transition: opacity 1s ease; }
+    #brand { letter-spacing: 0.28em; font-size: 13px; color: rgba(245,242,236,0.4); }
+
+    #status { padding: 5px 12px; border-radius: 999px;
+      background: rgba(255,255,255,0.06); backdrop-filter: blur(10px);
+      font-size: 11px; letter-spacing: 0.15em; color: rgba(245,242,236,0.5);
+      transition: opacity 1s ease; }
+    #status::before { content: '●'; margin-right: 5px; font-size: 8px; }
+    #status.online { color: #5fb88a; }
+    #status.online::before { color: #5fb88a; }
+    #status.offline { color: rgba(231,123,108,0.8); }
+    #status.offline::before { color: #c76b5e; }
+
+    /* ── 点击提示 ── */
+    #hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+      font-size: 17px; letter-spacing: 0.2em; color: rgba(245,242,236,0.7);
+      z-index: 6; animation: hint-pulse 2.5s ease infinite; pointer-events: none;
+      transition: opacity 0.8s ease; }
+    @keyframes hint-pulse {
+      0%,100% { opacity: 0.4; transform: translate(-50%,-50%) scale(1); }
+      50% { opacity: 0.9; transform: translate(-50%,-50%) scale(1.05); }
+    }
+    #hint.hide { opacity: 0; animation: none; }
+
+    /* ── 暂停按钮 ── */
+    #paused-btn { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%) scale(0.9);
+      z-index: 6; opacity: 0; transition: opacity 0.8s ease, transform 0.8s ease; pointer-events: none;
+      filter: drop-shadow(0 8px 30px rgba(0,0,0,0.8)); }
+    #paused-btn.show { opacity: 0.8; transform: translate(-50%,-50%) scale(1); }
+
+    /* ── 内容区（flex 纵向排列，避免重叠）── */
+    #content { position: relative; z-index: 2; display: flex; flex-direction: column;
+      align-items: center; gap: clamp(16px, 3vh, 32px);
+      width: 100%; max-width: 600px; }
+
+    /* ── 封面 ── */
+    #cover-wrap { position: relative; width: min(50vmin, 40vh, 420px); aspect-ratio: 1;
+      opacity: 0; transform: scale(0.85); transition: opacity 1s ease, transform 1s ease; }
+    #cover-wrap.active { opacity: 1; transform: scale(1); animation: cover-breathe 4s ease-in-out infinite; }
+    @keyframes cover-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+
+    #cover { position: absolute; inset: 0; border-radius: clamp(16px, 3vmin, 36px);
+      background-color: #2a2a3a; box-shadow: 0 20px 60px -10px rgba(0,0,0,0.8),
+        0 0 80px rgba(232,192,125,0.25), inset 0 0 0 1px rgba(255,255,255,0.1); }
+
+    /* ── 歌曲信息 ── */
+    #meta { text-align: center; max-width: 90vw;
+      opacity: 0; transition: opacity 1s ease; }
+    #meta.active { opacity: 1; }
+    #title { font-weight: 700; font-size: clamp(18px, 3.5vmin, 34px); line-height: 1.25;
+      margin: 0 0 0.3em; text-shadow: 0 2px 16px rgba(0,0,0,0.5);
+      overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    #artist { font-weight: 400; font-size: clamp(12px, 2vmin, 16px);
+      color: rgba(245,242,236,0.72); text-shadow: 0 1px 8px rgba(0,0,0,0.4); }
+
+    /* ── 音波 ── */
+    #viz { display: flex; align-items: flex-end; gap: 4px; height: 40px;
+      opacity: 0; transition: opacity 1s ease; }
+    #viz.active { opacity: 0.8; }
+    .vbar { width: 4px; height: 6px; border-radius: 2px;
+      background: linear-gradient(to top, #e8c07d, rgba(232,192,125,0.4));
+      animation: vbar-bounce 0.8s ease-in-out infinite alternate; }
+    .vbar:nth-child(1) { animation-delay: 0s; animation-duration: 0.7s; }
+    .vbar:nth-child(2) { animation-delay: 0.1s; animation-duration: 0.9s; }
+    .vbar:nth-child(3) { animation-delay: 0.2s; animation-duration: 0.6s; }
+    .vbar:nth-child(4) { animation-delay: 0.05s; animation-duration: 1.0s; }
+    .vbar:nth-child(5) { animation-delay: 0.15s; animation-duration: 0.8s; }
+    .vbar:nth-child(6) { animation-delay: 0.25s; animation-duration: 0.7s; }
+    .vbar:nth-child(7) { animation-delay: 0.1s; animation-duration: 0.95s; }
+    .vbar:nth-child(8) { animation-delay: 0.2s; animation-duration: 0.75s; }
+    .vbar:nth-child(9) { animation-delay: 0s; animation-duration: 0.85s; }
+    .vbar:nth-child(10) { animation-delay: 0.3s; animation-duration: 0.65s; }
+    @keyframes vbar-bounce { 0% { height: 5px; opacity: 0.4; } 100% { height: 35px; opacity: 1; } }
+
+    /* ── 进度条 ── */
+    #progress { width: min(80vw, 500px); opacity: 0; transition: opacity 1s ease; }
+    #progress.active { opacity: 0.8; }
+    #bar { position: relative; height: 3px; border-radius: 3px;
+      background: rgba(255,255,255,0.12); overflow: hidden; }
+    #fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+      background: linear-gradient(90deg, #e8c07d, rgba(255,255,255,0.9)); border-radius: 3px;
+      box-shadow: 0 0 8px rgba(232,192,125,0.5); transition: width 0.4s linear; }
+    #times { display: flex; justify-content: space-between; margin-top: 8px;
+      font-size: 11px; letter-spacing: 0.08em; color: rgba(245,242,236,0.48);
+      font-variant-numeric: tabular-nums; }
+
+    /* ── dim 模式 ── */
+    .dim-mode #aurora { opacity: 0.08 !important; }
+    .dim-mode #bg { opacity: 0.1 !important; }
+    .dim-mode #cover-wrap { opacity: 0.15 !important; }
+    .dim-mode #viz { opacity: 0.1 !important; }
+    .dim-mode #meta { opacity: 0.12 !important; }
+    .dim-mode #progress { opacity: 0.12 !important; }
+    .dim-mode #topbar { opacity: 0 !important; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <div id="aurora"></div>
+    <div id="bg"></div>
+    <div id="clicker"></div>
+
+    <div id="topbar">
+      <div id="brand">PiliPark Music · Now Playing</div>
+      <div id="status" class="offline">CONNECTING</div>
+    </div>
+
+    <div id="hint">点 击 屏 幕 开 始 播 放</div>
+
+    <svg id="paused-btn" viewBox="0 0 120 120" width="18vmin" height="18vmin">
+      <defs>
+        <linearGradient id="pg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#fff"/>
+          <stop offset="100%" stop-color="#e8c07d"/>
+        </linearGradient>
+      </defs>
+      <circle cx="60" cy="60" r="58" fill="rgba(0,0,0,0.3)" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+      <path d="M50 40 L84 60 L50 80 Z" fill="url(#pg)"/>
+    </svg>
+
+    <div id="content">
+      <div id="cover-wrap"><div id="cover"></div></div>
+
+      <div id="meta">
+        <h1 id="title">—</h1>
+        <p id="artist"></p>
+      </div>
+
+      <div id="viz">
+        <div class="vbar"></div><div class="vbar"></div><div class="vbar"></div>
+        <div class="vbar"></div><div class="vbar"></div><div class="vbar"></div>
+        <div class="vbar"></div><div class="vbar"></div><div class="vbar"></div>
+        <div class="vbar"></div>
+      </div>
+
+      <div id="progress">
+        <div id="bar"><div id="fill"></div></div>
+        <div id="times"><span id="t1">0:00</span><span id="t2">0:00</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  /* ============================================================
+   *  YinYue TV — 纯 vanilla JS，无外部依赖
+   *  仅控制本设备音频，不影响其他设备
+   * ============================================================ */
+
+  // ── DOM refs ──
+  const stage = document.getElementById('stage');
+  const aurora = document.getElementById('aurora');
+  const bg = document.getElementById('bg');
+  const clicker = document.getElementById('clicker');
+  const hint = document.getElementById('hint');
+  const coverWrap = document.getElementById('cover-wrap');
+  const cover = document.getElementById('cover');
+  const viz = document.getElementById('viz');
+  const progress = document.getElementById('progress');
+  const fill = document.getElementById('fill');
+  const t1 = document.getElementById('t1');
+  const t2 = document.getElementById('t2');
+  const meta = document.getElementById('meta');
+  const titleEl = document.getElementById('title');
+  const artistEl = document.getElementById('artist');
+  const statusEl = document.getElementById('status');
+  const pausedBtn = document.getElementById('paused-btn');
+
+  // ── 状态 ──
+  let localPlaying = false;
+  let tapped = false;
+  let position = 0;
+  let duration = 0;
+  let currentTrack = null;
+  let wsConnected = false;
+  let dimMode = false;
+  let dimTimer = null;
+  let tickTimer = null;
+
+  // ── 工具函数 ──
+  function fmt(s) {
+    s = Math.max(0, Math.floor(s || 0));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return h > 0 ? `${h}:${m.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`
+               : `${m}:${sec.toString().padStart(2,'0')}`;
+  }
+
+  function setPlaying(on) {
+    localPlaying = on;
+    if (on) {
+      aurora.classList.add('active');
+      bg.classList.add('active');
+      coverWrap.classList.add('active');
+      viz.classList.add('active');
+      progress.classList.add('active');
+      meta.classList.add('active');
+      hint.classList.add('hide');
+      pausedBtn.classList.remove('show');
+    } else {
+      aurora.classList.remove('active');
+      bg.classList.remove('active');
+      coverWrap.classList.remove('active');
+      viz.classList.remove('active');
+      progress.classList.remove('active');
+      meta.classList.remove('active');
+      if (tapped) pausedBtn.classList.add('show');
+    }
+  }
+
+  function updateCover(track) {
+    if (!track) return;
+    let url = '';
+    if (track.cover_url) url = track.cover_url;
+    else if (track.file) {
+      const f = track.file;
+      const rel = f.startsWith('local:track:') ? f.slice('local:track:'.length) : f;
+      url = `/api/cover?path=${encodeURIComponent(decodeURIComponent(rel))}` +
+            `&title=${encodeURIComponent(track.title||'')}` +
+            `&artist=${encodeURIComponent(track.artist||'')}` +
+            `&album=${encodeURIComponent(track.album||'')}`;
+    }
+    if (url) {
+      cover.style.backgroundImage = `url("${url}")`;
+      bg.style.backgroundImage = `url("${url}")`;
+    }
+  }
+
+  function updateMeta(track) {
+    if (!track) return;
+    titleEl.textContent = track.title || '—';
+    artistEl.textContent = track.artist || '';
+    if (track.album) {
+      artistEl.textContent += (track.artist ? ' · ' : '') + track.album;
+    }
+  }
+
+  // ── localStorage 持久化（避免刷新后进度归零闪烁）──
+  function loadSavedState() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('tvState') || '{}');
+      if (typeof saved.position === 'number') position = saved.position;
+      if (typeof saved.duration === 'number') duration = saved.duration;
+      if (saved.track) {
+        currentTrack = saved.track;
+        updateMeta(currentTrack);
+        updateCover(currentTrack);
+      }
+    } catch {}
+  }
+  let _lastSaveTs = 0;
+  function saveState() {
+    const now = Date.now();
+    if (now - _lastSaveTs < 1500) return;  // 节流：最多 1.5s 写一次
+    _lastSaveTs = now;
+    try {
+      localStorage.setItem('tvState', JSON.stringify({
+        position, duration, track: currentTrack
+      }));
+    } catch {}
+  }
+
+  function updateProgress() {
+    const pct = duration > 0 ? Math.min(100, (position / duration) * 100) : 0;
+    fill.style.width = pct + '%';
+    t1.textContent = fmt(position);
+    t2.textContent = fmt(duration);
+    saveState();
+  }
+
+  function resetDim() {
+    dimMode = false;
+    stage.classList.remove('dim-mode');
+    if (dimTimer) clearTimeout(dimTimer);
+    dimTimer = setTimeout(() => {
+      dimMode = true;
+      stage.classList.add('dim-mode');
+    }, 60000);
+  }
+
+  // ── WebSocket 状态同步（只读） ──
+  let ws = null;
+  let wsOpenedOnce = false;
+
+  function connectWS() {
+    try {
+      ws = new WebSocket(`ws://${location.host}/ws`);
+    } catch (e) { setTimeout(connectWS, 2500); return; }
+
+    ws.onopen = () => {
+      wsConnected = true;
+      wsOpenedOnce = true;
+      statusEl.textContent = 'LIVE';
+      statusEl.className = 'online';
+    };
+    ws.onclose = () => {
+      wsConnected = false;
+      statusEl.textContent = wsOpenedOnce ? 'RETRYING' : 'OFFLINE';
+      statusEl.className = 'offline';
+      setTimeout(connectWS, wsOpenedOnce ? 2500 : 1500);
+    };
+    ws.onerror = () => { try { ws.close(); } catch {} };
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type !== 'state') return;
+        if (msg.tracks && msg.current_track_idx !== undefined) {
+          currentTrack = msg.tracks[msg.current_track_idx] || null;
+          updateMeta(currentTrack);
+          updateCover(currentTrack);
+        }
+        if (msg.position !== undefined) position = +msg.position;
+        if (msg.duration !== undefined) duration = +msg.duration;
+        updateProgress();
+      } catch {}
+    };
+  }
+
+  // ── Web Audio snapclient ──
+  let audioCtx = null, audioGain = null;
+  let streamWS = null, streamWSReconnect = null;
+  let pcmInfo = null;
+  let pcmBuf = new Uint8Array(0);
+  let audioQ = [];
+  let nextStartAt = 0;
+  const QUEUE_TARGET = 0.28;
+
+  function ensureAudio() {
+    if (audioCtx) return audioCtx;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    audioCtx = new AC();
+    audioGain = audioCtx.createGain();
+    audioGain.gain.value = 0.9;
+    audioGain.connect(audioCtx.destination);
+    return audioCtx;
+  }
+
+  function connectStream() {
+    if (streamWS && (streamWS.readyState === WebSocket.OPEN || streamWS.readyState === WebSocket.CONNECTING)) return;
+    try { streamWS = new WebSocket(`ws://${location.host}/stream`); }
+    catch (e) { return; }
+    streamWS.binaryType = 'arraybuffer';
+    streamWS.onopen = () => {
+      if (!pcmInfo) pcmInfo = { sampleRate: 44100, bits: 16, channels: 2 };
+    };
+    streamWS.onmessage = (e) => {
+      if (e.data instanceof ArrayBuffer) appendBytes(new Uint8Array(e.data));
+    };
+    streamWS.onclose = streamWS.onerror = () => {
+      streamWS = null;
+      if (streamWSReconnect) clearTimeout(streamWSReconnect);
+      streamWSReconnect = setTimeout(connectStream, 1500);
+    };
+  }
+
+  function readU16(b, o) { return (b[o+1] << 8) | b[o]; }
+  function readU32(b, o) { return (b[o+3]<<24>>>0) | (b[o+2]<<16) | (b[o+1]<<8) | b[o]; }
+
+  function parseCodecHeader(payload) {
+    if (payload.length < 8) return;
+    let o = 0;
+    const codecLen = readU32(payload, o); o += 4;
+    if (payload.length < o + codecLen + 4) return;
+    const codec = new TextDecoder().decode(payload.subarray(o, o + codecLen)); o += codecLen;
+    const headerLen = readU32(payload, o); o += 4;
+    const header = payload.subarray(o, o + headerLen);
+    if (codec.toLowerCase().startsWith('pcm') && header.length >= 12) {
+      const dv = new DataView(header.buffer, header.byteOffset, header.length);
+      pcmInfo = { sampleRate: dv.getUint32(0, true), bits: dv.getUint32(4, true), channels: dv.getUint32(8, true) };
+    }
+  }
+
+  function playBuffer(buf) {
+    if (!audioCtx || !audioGain) return;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf; src.connect(audioGain);
+    const now = audioCtx.currentTime;
+    if (nextStartAt < now + 0.02) nextStartAt = now + 0.02;
+    src.start(nextStartAt);
+    nextStartAt += buf.duration;
+    src.onended = () => src.disconnect();
+  }
+
+  function feedQueue() {
+    if (!audioCtx || !audioGain) return;
+    const now = audioCtx.currentTime;
+    while (audioQ.length > 0 && (nextStartAt - now) < QUEUE_TARGET) playBuffer(audioQ.shift());
+  }
+
+  function handleWireChunk(payload) {
+    if (!pcmInfo || payload.length < 12) return;
+    const chunkSize = readU32(payload, 8);
+    const chunkBytes = payload.subarray(12, 12 + chunkSize);
+    const { sampleRate, bits, channels } = pcmInfo;
+    ensureAudio();
+    if (!audioCtx) return;
+    const bps = bits / 8;
+    const total = Math.floor(chunkBytes.length / (bps * channels));
+    if (total <= 0) return;
+    const ab = audioCtx.createBuffer(channels, total, sampleRate);
+    for (let ch = 0; ch < channels; ch++) {
+      const data = ab.getChannelData(ch);
+      if (bits === 16) {
+        for (let i = 0, s = 0; i < total; i++, s += bps * channels) {
+          const o = ch * bps;
+          const v = (chunkBytes[s+o+1] << 8) | (chunkBytes[s+o] & 0xff);
+          data[i] = (v > 0x7fff ? v - 0x10000 : v) / 0x8000;
+        }
+      }
+    }
+    audioQ.push(ab);
+    if (audioQ.length > 30) { audioQ.splice(0, Math.max(1, audioQ.length - 24)); nextStartAt = (audioCtx?.currentTime || 0) + 0.05; }
+    feedQueue();
+  }
+
+  function appendBytes(bytes) {
+    const merged = new Uint8Array(pcmBuf.length + bytes.length);
+    merged.set(pcmBuf, 0); merged.set(bytes, pcmBuf.length);
+    pcmBuf = merged;
+    const HS = 26;
+    while (pcmBuf.length >= HS) {
+      const type = readU16(pcmBuf, 0);
+      const size = readU32(pcmBuf, 22);
+      if (pcmBuf.length < HS + size) break;
+      const payload = pcmBuf.subarray(HS, HS + size);
+      if (type === 0x01) parseCodecHeader(payload);
+      else if (type === 0x02) handleWireChunk(payload);
+      pcmBuf = pcmBuf.subarray(HS + size);
+    }
+  }
+
+  // ── 点击播放/暂停 ──
+  let serverPlayRequested = false;
+
+  async function togglePlay() {
+    tapped = true;
+    resetDim();
+    const ac = ensureAudio();
+    if (ac && ac.state === 'suspended') { try { await ac.resume(); } catch {} }
+    if (!localPlaying) {
+      // 第一次播放时，确保 mopidy 在播放（让音频流通过 snapserver）
+      if (!serverPlayRequested) {
+        serverPlayRequested = true;
+        try { await fetch('/api/play', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }); } catch {}
+      }
+      setPlaying(true);
+      nextStartAt = 0;
+      audioQ.length = 0;
+      connectStream();
+      if (audioGain) audioGain.gain.value = 0.9;
+      if (!tickTimer) {
+        tickTimer = setInterval(() => {
+          if (localPlaying && duration > 0 && position < duration) {
+            position = Math.min(duration - 0.01, position + 1);
+            updateProgress();
+          }
+          feedQueue();
+        }, 1000);
+      }
+    } else {
+      setPlaying(false);
+      if (audioGain) audioGain.gain.value = 0;
+      if (ac) { try { await ac.suspend(); } catch {} }
+    }
+  }
+
+  clicker.addEventListener('click', togglePlay);
+
+  // ── 初始化 ──
+  loadSavedState();      // 先用 localStorage 缓存恢复进度，避免刷新闪烁 0:00
+  updateProgress();
+  connectWS();
+  resetDim();
+
+  // 初始状态
+  fetch('/api/state').then(r => r.json()).then(d => {
+    if (d.tracks && d.current_track_idx !== undefined) {
+      currentTrack = d.tracks[d.current_track_idx] || d.tracks[0] || null;
+      updateMeta(currentTrack);
+      updateCover(currentTrack);
+    }
+    if (d.position !== undefined) position = +d.position;
+    if (d.duration !== undefined) duration = +d.duration;
+    updateProgress();
+  }).catch(() => {});
+  </script>
+</body>
+</html>

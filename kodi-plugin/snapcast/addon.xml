@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="script.snapcast"
+       name="Snapcast Client"
+       version="1.0.0"
+       provider-name="YinYue">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+    <import addon="xbmc.gui" version="5.15.0"/>
+    <import addon="xbmc.json" version="13.0.0"/>
+  </requires>
+  <extension point="xbmc.python.script"
+             library="main.py">
+    <provides>executable</provides>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary>Snapcast 客户端</summary>
+    <summary lang="zh_cn">Snapcast 客户端</summary>
+    <description>将 Kodi 连接到 Snapcast 服务器，实现多房间音频同步播放</description>
+    <description lang="zh_cn">将 Kodi 连接到 Snapcast 服务器，实现多房间音频同步播放</description>
+    <platform>all</platform>
+    <license>GPL-2.0</license>
+    <forum></forum>
+    <source>https://github.com/YOUR_REPO/YinYue</source>
+    <email></email>
+    <assets>
+      <icon>resources/images/icon.png</icon>
+      <fanart>resources/images/fanart.jpg</fanart>
+    </assets>
+  </extension>
+</addon>

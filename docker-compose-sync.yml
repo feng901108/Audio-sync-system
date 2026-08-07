@@ -1,0 +1,81 @@
+# Music Sync 整合部署（方案A）
+#
+# 架构：
+#   浏览器 ──HTTP/WS──> music-sync:8765 ──MPD──> mopidy:6600
+#                                                       │
+#                                                       ▼ (写 FIFO)
+#                                            ./data/audio/snapcast_fifo
+#                                                       │
+#                                                       ▼ (读 FIFO)
+#                                            snapserver ──> snapclient(多音箱)
+#
+# 三个服务：
+#   1. snapserver  - 音频同步分发（读 FIFO，推送给 snapclient）
+#   2. mopidy      - 音乐播放引擎（解码音频写 FIFO，暴露 MPD 控制）
+#   3. music-sync   - FastAPI 控制面板（通过 MPD 控制 mopidy，托管前端）
+#
+# 部署目录默认为 /vol1/1000/docker/yinyue，需包含：
+#   config/snapserver/snapserver.conf
+#   config/mopidy/mopidy.conf
+#   data/audio/                    # FIFO 所在目录
+#   .env                            # MUSIC_DIR=/vol1/1000/音乐
+
+services:
+  snapserver:
+    image: docker.io/sweisgerber/snapcast:latest
+    container_name: snapserver
+    hostname: snapserver
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1001
+      - TZ=${TZ:-Asia/Shanghai}
+      - START_SNAPCLIENT=false
+      - HOME=/data
+    ports:
+      - "1704:1704"   # snapclient 音频流
+      - "1705:1705"   # TCP 控制协议
+      - "1780:1780"   # SnapWeb 控制台
+    volumes:
+      - ./snapcast/config:/config
+      - ./data/audio:/audio
+      - /etc/localtime:/etc/localtime:ro
+
+  mopidy:
+    image: docker.io/sweisgerber/mopidy:latest
+    container_name: mopidy
+    hostname: mopidy
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1001
+      - TZ=${TZ:-Asia/Shanghai}
+    ports:
+      - "6600:6600"   # MPD 协议（music-sync 通过容器名 mopidy:6600 访问）
+      - "6680:6680"   # Mopidy HTTP / Iris
+    volumes:
+      - ./mopidy/config:/config
+      - ./data:/data
+      - ${MUSIC_DIR:-/vol1/1000/音乐}:/music:ro
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - snapserver
+
+  music-sync:
+    build: .
+    image: music-sync:latest
+    container_name: music-sync
+    restart: unless-stopped
+    ports:
+      - "8765:8765"   # 控制面板 + WebSocket
+    volumes:
+      - ${MUSIC_DIR:-/vol1/1000/音乐}:/music:ro
+    environment:
+      - MUSIC_DIR=/music
+      - MPD_HOST=mopidy
+      - MPD_PORT=6600
+      - SNAPSERVER_URL=http://snapserver:1780
+      - TZ=${TZ:-Asia/Shanghai}
+    depends_on:
+      - mopidy
+      - snapserver

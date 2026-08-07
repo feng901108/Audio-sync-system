@@ -1,0 +1,79 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh_CN\n"
+
+msgid "3001"
+msgstr "请先配置 Snapcast 服务器地址"
+
+msgid "3002"
+msgstr "Snapcast 客户端已启动"
+
+msgid "3003"
+msgstr "启动 Snapcast 客户端失败"
+
+msgid "3004"
+msgstr "Snapcast 客户端已停止"
+
+msgid "3005"
+msgstr "Snapcast 客户端异常退出"
+
+msgid "3006"
+msgstr "运行中"
+
+msgid "3007"
+msgstr "已连接"
+
+msgid "3008"
+msgstr "未连接"
+
+msgid "3009"
+msgstr "服务器地址"
+
+msgid "3010"
+msgstr "客户端名称"
+
+msgid "3011"
+msgstr "默认"
+
+msgid "3012"
+msgstr "Snapcast 设置"
+
+msgid "3013"
+msgstr "服务器 IP 地址"
+
+msgid "3014"
+msgstr "服务器端口"
+
+msgid "3015"
+msgstr "延迟补偿（毫秒）"
+
+msgid "3016"
+msgstr "使用 PulseAudio"
+
+msgid "3017"
+msgstr "开机自启"
+
+msgid "3018"
+msgstr "运行模式"
+
+msgid "3019"
+msgstr "服务模式"
+
+msgid "3020"
+msgstr "脚本模式"
+
+msgid "3021"
+msgstr "启动"
+
+msgid "3022"
+msgstr "停止"
+
+msgid "3023"
+msgstr "切换"
+
+msgid "3024"
+msgstr "设置"
+
+msgid "3025"
+msgstr "关闭"

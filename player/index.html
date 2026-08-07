@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Music Sync Player</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<style>
+  :root {
+    /* 与 SnapWeb (Material Dark) 统一的配色 */
+    --bg: #121212;                /* SnapWeb 主背景 */
+    --surface: #1e1e1e;          /* SnapWeb 卡片表面 */
+    --surface2: #2a2a2a;         /* 悬停/激活态 */
+    --divider: rgba(255,255,255,0.12);  /* SnapWeb 分割线 */
+    --text: rgba(255,255,255,0.7);     /* SnapWeb 主文字 */
+    --text2: rgba(255,255,255,0.5);    /* SnapWeb 次文字 */
+    --accent: #266798;          /* SnapWeb 主色（蓝灰） */
+    --accent-hover: #2f78ab;
+    --accent-strong: #90caf9;   /* 强调态浅蓝（Material Light Blue 200） */
+    --snap: #81c784;            /* 在线状态绿（Material Green 300） */
+    --warn: #ffb74d;            /* 警告橙（Material Orange 300） */
+    --error: #ef5350;           /* 错误红（Material Red 400） */
+    --radius: 8px;              /* SnapWeb 圆角较小，对齐 */
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; color-scheme: dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 左右分栏布局 */
+  #app { display: flex; height: 100vh; height: 100dvh; color-scheme: dark; }
+
+  /* 左侧：播放控制 */
+  .player-panel {
+    width: 420px; flex-shrink: 0;
+    display: flex; flex-direction: column;
+    border-right: 1px solid var(--surface2);
+    background: var(--bg);
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+
+  /* 右侧：SnapWeb iframe 填满剩余空间 */
+  .snapweb-panel {
+    flex: 1; position: relative;
+    background: var(--bg);
+    min-width: 0; /* 关键：允许收缩，防止 iframe 撑爆布局 */
+    display: flex; flex-direction: column;
+    color-scheme: dark;  /* 让 iframe 内的 SnapWeb 走深色主题 */
+  }
+
+  /* 面板标题栏 */
+  .panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; background: var(--surface);
+    border-bottom: 1px solid var(--divider);
+    flex-shrink: 0; height: 56px;
+  }
+  .panel-header h2 {
+    font-size: 14px; font-weight: 500; letter-spacing: 0.3px;
+    text-transform: uppercase; color: var(--text);
+  }
+  .panel-header .badge {
+    background: rgba(255,255,255,0.08); color: var(--text2);
+    font-size: 11px; padding: 3px 10px; border-radius: 12px;
+    min-width: 20px; text-align: center; font-weight: 500;
+  }
+  .panel-header .badge.active { background: var(--accent); color: #fff; }
+  .panel-header .status {
+    font-size: 12px; color: var(--text2);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .panel-header .status::before {
+    content: ''; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text2); display: inline-block;
+  }
+  .panel-header .status.connected { color: var(--snap); }
+  .panel-header .status.connected::before { background: var(--snap); }
+
+  /* 播放控制内容容器 */
+  .player-view {
+    padding: 20px;
+    display: flex; flex-direction: column;
+    flex: 1; gap: 16px;
+  }
+
+  /* Now Playing */
+  .now-playing {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 24px 20px;
+    text-align: center;
+  }
+  .album-art {
+    width: 180px; height: 180px;
+    border-radius: var(--radius);
+    background: linear-gradient(135deg, #2a2a2a, #1e1e1e);
+    margin: 0 auto 16px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 48px; color: var(--accent-strong);
+    overflow: hidden;
+    border: 1px solid var(--divider);
+  }
+  .album-art.playing { animation: pulse 2.5s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+  .track-title { font-size: 17px; font-weight: 500; margin-bottom: 4px; word-break: break-word; color: #fff; }
+  .track-info { font-size: 13px; color: var(--text2); word-break: break-word; }
+
+  /* Progress */
+  .progress-bar {
+    width: 100%; height: 3px; background: rgba(255,255,255,0.12);
+    border-radius: 1.5px; margin: 20px 0 8px; cursor: pointer; position: relative;
+  }
+  .progress-fill {
+    height: 100%; background: var(--accent); border-radius: 1.5px;
+    transition: width 0.15s linear;
+    position: relative;
+  }
+  .progress-fill.dragging { transition: none; }
+  .progress-thumb {
+    content: ''; position: absolute; right: -7px; top: 50%;
+    transform: translateY(-50%); width: 14px; height: 14px;
+    background: var(--accent); border-radius: 50%;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .progress-times { display: flex; justify-content: space-between; font-size: 11px; color: var(--text2); }
+
+  /* Controls */
+  .controls { display: flex; align-items: center; justify-content: center; gap: 24px; margin: 12px 0 4px; }
+  .btn {
+    background: none; border: none; color: var(--text); cursor: pointer;
+    font-size: 22px; padding: 8px; border-radius: 50%;
+    transition: background 0.2s, color 0.2s; display: flex; align-items: center; justify-content: center;
+    width: 40px; height: 40px;
+  }
+  .btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .btn-play {
+    width: 52px; height: 52px; font-size: 26px;
+    background: var(--accent); color: #fff; border-radius: 50%;
+  }
+  .btn-play:hover { background: var(--accent-hover); color: #fff; }
+
+  /* Volume */
+  .volume-row { display: flex; align-items: center; gap: 12px; margin: 8px 0 0; }
+  .volume-row span { font-size: 14px; color: var(--text2); width: 20px; }
+  .volume-slider {
+    flex: 1; -webkit-appearance: none; appearance: none;
+    height: 3px; background: rgba(255,255,255,0.12); border-radius: 1.5px; outline: none;
+  }
+  .volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent-strong); cursor: pointer;
+    border: 2px solid var(--surface);
+  }
+  .volume-slider::-moz-range-thumb {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent-strong); cursor: pointer; border: 2px solid var(--surface);
+  }
+
+  /* Track List */
+  .track-list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .track-item {
+    display: flex; align-items: center; padding: 10px 12px;
+    border-radius: var(--radius); cursor: pointer; transition: background 0.15s;
+    gap: 12px;
+  }
+  .track-item:hover { background: rgba(255,255,255,0.04); }
+  .track-item.active { background: rgba(255,255,255,0.08); }
+  .track-item .idx { font-size: 13px; color: var(--text2); width: 24px; text-align: center; flex-shrink: 0; }
+  .track-item.active .idx { color: var(--accent-strong); }
+  .track-item .name { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .track-item.active .name { color: #fff; }
+  .track-item .playing-icon { color: var(--accent-strong); font-size: 12px; flex-shrink: 0; }
+
+  /* Loading */
+  .loading { text-align: center; padding: 60px 20px; color: var(--text2); }
+  .spinner {
+    width: 28px; height: 28px; border: 2px solid rgba(255,255,255,0.12);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.8s linear infinite; margin: 0 auto 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Rescan button */
+  .rescan-btn {
+    background: rgba(255,255,255,0.04); border: 1px solid var(--divider); color: var(--text2);
+    padding: 8px 16px; border-radius: var(--radius); font-size: 12px; cursor: pointer;
+    margin: 0 auto; display: block; transition: all 0.2s;
+    font-family: inherit;
+  }
+  .rescan-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+
+  /* SnapWeb iframe 填满右侧面板剩余空间 */
+  .snapweb-view {
+    width: 100%; flex: 1; border: none;
+    background: var(--bg);
+    display: block;
+    min-height: 0;
+    color-scheme: dark;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- 左侧：播放控制 -->
+  <div class="player-panel">
+    <div class="panel-header">
+      <h2>播放控制</h2>
+      <span class="status" :class="{ connected: wsConnected }">
+        {{ wsConnected ? '已连接' : '连接中' }}
+      </span>
+    </div>
+
+    <div class="player-view">
+      <div v-if="loading" class="loading">
+        <div class="spinner"></div>
+        <div>加载音乐库...</div>
+      </div>
+
+      <template v-else>
+        <!-- Now Playing -->
+        <div class="now-playing">
+          <div class="album-art" :class="{ playing: isPlaying }">
+            {{ isPlaying ? '♪' : '♫' }}
+          </div>
+          <div class="track-title">{{ currentTrack?.title || '未选择曲目' }}</div>
+          <div class="track-info">
+            {{ currentTrack?.artist || '未知艺术家' }}
+            <span v-if="currentTrack?.album"> · {{ currentTrack.album }}</span>
+          </div>
+
+          <!-- Progress -->
+          <div class="progress-bar"
+               ref="progressBarRef"
+               @pointerdown="startDrag"
+               @pointermove="onDrag"
+               @pointerup="endDrag"
+               @pointercancel="endDrag"
+               @click="seekTo">
+            <div class="progress-fill"
+                 :class="{ dragging: isDraggingProgress }"
+                 :style="{ width: (isDraggingProgress ? dragProgressPercent : progressPercent) + '%' }">
+              <div class="progress-thumb"></div>
+            </div>
+          </div>
+          <div class="progress-times">
+            <span>{{ formatTime(position) }}</span>
+            <span>{{ formatTime(duration) }}</span>
+          </div>
+
+          <!-- Controls -->
+          <div class="controls">
+            <button class="btn" @click="prevTrack" :disabled="tracks.length === 0">⏮</button>
+            <button class="btn btn-play" @click="togglePlay" :disabled="tracks.length === 0">
+              {{ isPlaying ? '⏸' : '▶' }}
+            </button>
+            <button class="btn" @click="nextTrack" :disabled="tracks.length === 0">⏭</button>
+          </div>
+
+          <!-- Volume -->
+          <div class="volume-row">
+            <span>🔈</span>
+            <input type="range" class="volume-slider" min="0" max="100" v-model.number="volume" @input="setVolume">
+            <span>🔊</span>
+          </div>
+        </div>
+
+        <!-- Track List -->
+        <div class="track-list">
+          <div
+            v-for="(track, idx) in tracks"
+            :key="track.id"
+            class="track-item"
+            :class="{ active: idx === currentTrackIdx }"
+            @click="selectTrack(idx)"
+          >
+            <span class="idx">{{ idx + 1 }}</span>
+            <span class="name">{{ track.title }}</span>
+            <span v-if="idx === currentTrackIdx && isPlaying" class="playing-icon">▶</span>
+          </div>
+        </div>
+
+        <button class="rescan-btn" @click="rescan">重新扫描音乐库</button>
+      </template>
+    </div>
+  </div>
+
+  <!-- 右侧：音箱管理（SnapWeb iframe，通过后端代理注入深色主题） -->
+    <div class="snapweb-panel">
+    <div class="panel-header">
+      <h2>音箱管理</h2>
+      <span class="badge" :class="{ active: clientCount > 0 }">
+        {{ clientCount > 0 ? clientCount + ' 在线' : '无客户端' }}
+      </span>
+    </div>
+    <iframe
+      class="snapweb-view"
+      src="/snapweb/"
+      referrerpolicy="no-referrer"
+      allow="autoplay; clipboard-read; clipboard-write"
+    ></iframe>
+  </div>
+</div>
+
+<script>
+const { createApp, ref, computed, onMounted, onUnmounted } = Vue;
+
+createApp({
+  setup() {
+    const tracks = ref([]);
+    const currentTrackIdx = ref(0);
+    const isPlaying = ref(false);
+    const position = ref(0);
+    const duration = ref(0);
+    const volume = ref(80);
+    const wsConnected = ref(false);
+    const loading = ref(true);
+    const clientCount = ref(0);
+    const progressBarRef = ref(null);
+    const isDraggingProgress = ref(false);
+    const dragProgressPercent = ref(0);
+
+    let ws = null;
+
+    const currentTrack = computed(() => tracks.value[currentTrackIdx.value] || null);
+    const progressPercent = computed(() => duration.value > 0 ? (position.value / duration.value) * 100 : 0);
+
+    function formatTime(s) {
+      s = Math.floor(s || 0);
+      const m = Math.floor(s / 60);
+      const sec = s % 60;
+      return `${m}:${sec.toString().padStart(2, '0')}`;
+    }
+
+    // ─── WebSocket：接收服务端推送的状态 ────────────────────────────────
+    function connectWS() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${location.host}/ws`);
+
+      ws.onopen = () => { wsConnected.value = true; };
+
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'state') {
+          if (msg.tracks) tracks.value = msg.tracks;
+          if (msg.current_track_idx !== undefined) currentTrackIdx.value = msg.current_track_idx;
+          if (msg.is_playing !== undefined) isPlaying.value = msg.is_playing;
+          if (msg.position !== undefined) position.value = msg.position;
+          if (msg.duration !== undefined) duration.value = msg.duration;
+          if (msg.volume !== undefined) volume.value = msg.volume;
+          loading.value = false;
+        }
+      };
+
+      ws.onclose = () => {
+        wsConnected.value = false;
+        setTimeout(connectWS, 3000);
+      };
+    }
+
+    // ─── 查询 SnapWeb 客户端数量（用于 Tab 徽标） ────────────────────────
+    let clientTimer = null;
+    let clientFetchInFlight = false;      // 上次请求还没返回时，不再发请求（防抖）
+    let clientLastFinishedAt = 0;         // 上次完成时间戳（辅助）
+    let clientPollMs = 2000;              // 轮询间隔：10s → 2s（后端有 500ms 缓存，不会打崩）
+
+    async function fetchClientCount() {
+      if (clientFetchInFlight) return;
+      // 浏览器 Tab 在后台（document.hidden）时暂停轮询（切回来会 visibilitychange 再补一次）
+      if (typeof document !== 'undefined' && document.hidden) return;
+      clientFetchInFlight = true;
+      try {
+        const r = await fetch('/api/clients', { cache: 'no-store' });
+        if (!r.ok) return;
+        const d = await r.json();
+        clientCount.value = (d?.clients || []).length;
+        clientLastFinishedAt = Date.now();
+      } catch (e) { /* 忽略 */ } finally {
+        clientFetchInFlight = false;
+      }
+    }
+
+    function startClientPolling() {
+      stopClientPolling();
+      fetchClientCount();
+      clientTimer = setInterval(fetchClientCount, clientPollMs);
+    }
+    function stopClientPolling() {
+      if (clientTimer) { clearInterval(clientTimer); clientTimer = null; }
+    }
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          stopClientPolling();
+        } else {
+          // 切回前台：立即补一次 + 重启轮询
+          startClientPolling();
+        }
+      });
+    }
+
+    // ─── Controls：调用后端 API（后端再调 MPD 控制 mopidy）─────────────
+    async function post(path, body) {
+      try {
+        await fetch(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+      } catch (e) { console.error(e); }
+    }
+
+    function togglePlay() {
+      if (isPlaying.value) {
+        post('/api/pause');
+      } else {
+        post('/api/play', { track_idx: currentTrackIdx.value, position: position.value });
+      }
+    }
+
+    function selectTrack(idx) {
+      post('/api/play', { track_idx: idx, position: 0 });
+    }
+
+    function nextTrack() { post('/api/next'); }
+    function prevTrack() { post('/api/prev'); }
+
+    function _ratioFromEvent(e) {
+      const el = progressBarRef.value || e.currentTarget;
+      if (!el) return 0;
+      const rect = el.getBoundingClientRect();
+      const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+      return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    }
+
+    function seekTo(e) {
+      // Click (non-drag) seeks immediately
+      if (isDraggingProgress.value) return;
+      const ratio = _ratioFromEvent(e);
+      const pos = ratio * duration.value;
+      post(`/api/seek?position=${pos}`);
+    }
+
+    function startDrag(e) {
+      isDraggingProgress.value = true;
+      dragProgressPercent.value = _ratioFromEvent(e) * 100;
+      if (progressBarRef.value) progressBarRef.value.setPointerCapture && progressBarRef.value.setPointerCapture(e.pointerId);
+      if (e.preventDefault) e.preventDefault();
+    }
+
+    function onDrag(e) {
+      if (!isDraggingProgress.value) return;
+      dragProgressPercent.value = _ratioFromEvent(e) * 100;
+    }
+
+    let _seekTimer = null;
+    function endDrag(e) {
+      if (!isDraggingProgress.value) return;
+      isDraggingProgress.value = false;
+      const pos = (dragProgressPercent.value / 100) * duration.value;
+      if (_seekTimer) clearTimeout(_seekTimer);
+      _seekTimer = setTimeout(() => post(`/api/seek?position=${pos}`), 0);
+    }
+
+    let volumeTimer = null;
+    function setVolume() {
+      if (volumeTimer) clearTimeout(volumeTimer);
+      volumeTimer = setTimeout(() => post(`/api/volume?volume=${volume.value}`), 300);
+    }
+
+    function rescan() {
+      post('/api/rescan');
+      loading.value = true;
+    }
+
+    onMounted(() => {
+      connectWS();
+      // 启动 clients 轮询（Tab隐藏时自动停、切换前台立即补+重启、10s→2s、请求中不重发）
+      startClientPolling();
+    });
+    onUnmounted(() => {
+      if (ws) ws.close();
+      stopClientPolling();
+    });
+
+    return {
+      tracks, currentTrackIdx, isPlaying, position, duration, volume,
+      wsConnected, loading, clientCount, currentTrack, progressPercent,
+      progressBarRef, isDraggingProgress, dragProgressPercent,
+      formatTime, togglePlay, selectTrack, nextTrack, prevTrack, seekTo, setVolume, rescan,
+      startDrag, onDrag, endDrag,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

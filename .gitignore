@@ -1,33 +1,37 @@
-node_modules/
-data/audio/*
-!data/audio/.gitkeep
-data/app.db
-data/app.db-*
-data/server.log
-dist/
-web/dist/
-.chrome-data/
-.DS_Store
-*.log
+# ─── 运行时数据（不应提交）───
+data/
+music/
+*.fifo
+snapcast_fifo
+
+# ─── 环境与密钥 ───
 .env
-.pnpm-store/
+.env.local
+*.key
+*.pem
 
-# 截图/录屏（Snipaste 等）
-Snipaste_*.jpg
-Snipaste_*.png
-Screenshot*.png
+# ─── 编辑器与系统文件 ───
+.trae/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
 
-# 本机 / NAS 的一次性脚本（不进 git；只保留 scripts/deploy.sh 作为统一入口）
-/deploy.sh
-/.nas-setup.sh
-/deploy.cmd
+# ─── Python 缓存 ───
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
 
-# 临时对比/备份包（不进 git）
-*.tar.gz
+# ─── 临时调试脚本（历史遗留，不入库）───
+fix_iris*.py
 
-# OTA APK 发布目录（不进 git；放 NAS / CDN 单独管）
-/apk/
+# ─── 日志 ───
+*.log
+logs/
 
-# Hermes session 文档（不进仓；plan / verify / logs）
-.hermes/
-
+# ─── 构建产物 ───
+dist/
+build/
+*.apk

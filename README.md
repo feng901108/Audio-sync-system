@@ -1,276 +1,329 @@
-# 聚光广播 Juguang
+# PiliPark Music · 局域网多音箱音频同步系统
 
-园区内的多设备音频同步广播系统。一处选歌，所有终端（小米电视、安卓手机接音响、iPhone Safari）< 80ms 内同步播放。
-
-> **零依赖**：服务端只需要 Node.js ≥ 22.5（用到了内置 `node:sqlite`）。前端零构建，纯静态文件 + ES module。
-
-## 功能
-
-- **多设备同步播放**：NTP 风格时钟同步 + 预约调度 + 漂移修正
-- **多分区架构**：每分区独立播放状态、队列、广播；曲目库全局共享
-- **歌单管理**：创建 / 改名 / 删除歌单，批量载入分区队列
-- **播放模式**：顺序 / 单曲循环 / 随机 / 歌单循环
-- **曲目管理**：上传（多文件 + 进度条）、删除、编辑标题 / 艺人
-- **队列拖拽排序**：HTML5 原生拖拽改顺序
-- **两层音量**：服务端 master × 客户端 local，admin 调音量不覆盖用户本机
-- **设备管理**：分活跃 / 历史两段展示、改名、调音量、移动分区、移除（活跃设备删除会同时断开 WS）
-- **零公网依赖**：自实现 WebSocket（RFC6455）、自管 session（scrypt 哈希）
-- **音频强缓存 + Range 容错**：`/audio/*` 走 `Cache-Control: immutable` + ETag/304，二次播放秒起；iOS Safari 非标 Range 不再被 416 拒绝
-- **iOS Safari 兼容**：autoplay policy 解锁 + AudioContext 状态追踪 + 诊断面板（缓冲 / MediaError / seek 次数实时可见）
-
-## 架构
+一套基于 **Snapcast + Mopidy + FastAPI** 的家庭音乐同步播放方案：在 NAS 上部署一个服务端，家里所有设备（手机、电视、电脑、音箱）登录播放端即可**毫秒级同步播放同一首歌**，且每个设备可独立控制自己的播放/暂停与音量。
 
 ```
-┌─────────────────────┐
-│  管理端浏览器 /admin │  ← 上传 / 选歌 / 控队列 / 分区管理 / 歌单 / 模式
-└──────────┬──────────┘
-           │  HTTP + WebSocket
-┌──────────▼──────────────────────────────────────────────────────────┐
-│ 服务端 Node.js (zero-dep, node:sqlite + node:http)                 │
-│   - REST: /api/auth /tracks /devices /playlists /zones /playback  │
-│   - WS:   /ws  Hub 多分区广播、ping/pong、register                 │
-│   - 静态: /audio/*  Range + ETag/304 + Cache-Control: immutable     │
-│            (前端仍 no-store,走 docker rebuild 拉新)               │
-└──────────┬──────────────────────────────────────────────────────────┘
-           │  WebSocket（zoneId-scoped broadcast）
-   ┌───────┼───────┬─────────────┐
-   ▼       ▼       ▼             ▼
- 小米电视  安卓手机  iPhone Safari  其它设备
- (网页)   (网页)   (网页 /)
+                        ┌─────────────────────────────────────┐
+                        │           NAS (Docker)              │
+                        │  ┌───────────────────────────────┐  │
+                        │  │  music-sync  (FastAPI:8765)   │  │  ← 控制面板 + 前端
+                        │  │   · /api/*  MPD 控制           │  │
+                        │  │   · /ws     状态广播           │  │
+                        │  │   · /stream  音频流代理        │  │
+                        │  │   · /snapweb 反向代理          │  │
+                        │  └──────────┬────────────────────┘  │
+                        │            │ MPD:6600                │
+                        │  ┌─────────▼─────────────────────┐ │
+                        │  │  mopidy  (解码 + 写 FIFO)      │ │
+                        │  └─────────┬─────────────────────┘ │
+                        │            │ /audio/snapcast_fifo   │
+                        │  ┌─────────▼─────────────────────┐ │
+                        │  │  snapserver  (时间戳分发)      │ │
+                        │  │  TCP:1704  HTTP:1780           │ │
+                        │  └─────────┬─────────────────────┘ │
+                        └────────────┼───────────────────────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+       ┌───────▼──────┐      ┌────────▼──────┐      ┌────────▼──────┐
+       │ snapclient   │      │ snapclient    │      │ 浏览器(tv.html)│
+       │ (手机/电视)  │      │ (电脑/树莓派) │      │ Web Audio 播放 │
+       └──────────────┘      └───────────────┘      └───────────────┘
 ```
 
-## 快速开始（开发）
+## 核心特性
 
-需要 **Node.js ≥ 22.5**（已用 v24.15 验证）。
+- **毫秒级同步**：Snapcast 自研时间锚定 + 动态重采样，多设备延迟差 < 100ms
+- **一服务多终端**：NAS 部署一次，任意设备打开浏览器即可播放
+- **三种播放端**：
+  - `index.html` —— 左右分栏控制面板（左：播放控制 + 曲目列表；右：SnapWeb 音箱管理）
+  - `tv.html` —— 极简全屏封面播放界面（电视 / 手机友好，内置 Web Audio 客户端，OLED 屏幕保护）
+  - 原生 `snapclient` —— 最高同步精度的硬件播放终端
+- **浏览器即播放**：`tv.html` 内置 Web Audio API 解码 PCM 流，无需安装任何客户端即可发声
+- **状态实时同步**：后端每秒广播播放状态，刷新页面后进度自动从 localStorage 恢复，不会重置
+- **跨设备独立控制**：TV 端只控制自己设备的音频，不影响其他设备
+- **OLED 屏幕保护**：极光流动背景、封面呼吸动画、60 秒无操作自动暗屏
+- **SnapWeb 深色主题**：通过 HTML 注入 CSS，让 SnapWeb 与控制面板视觉统一
+
+## 目录结构
+
+```
+.
+├── server/                    # FastAPI 后端（控制面板 + WebSocket 同步 + SnapWeb 代理）
+│   └── main.py
+├── player/                    # 前端界面（无构建步骤，纯静态）
+│   ├── index.html             # 左右分栏控制面板（Vue 3 CDN）
+│   └── tv.html                # 极简全屏播放界面（vanilla JS，电视/手机友好）
+├── config/                    # 服务配置
+│   ├── snapserver/snapserver.conf
+│   └── mopidy/mopidy.conf
+├── kodi-plugin/snapcast/      # Kodi 插件（启动 snapclient）
+├── scripts/                   # 部署 / 安装脚本
+│   ├── nas-deploy.sh          # NAS 一键部署（旧版三服务架构）
+│   ├── scan-library.sh        # 扫描音乐库
+│   ├── termux-install.sh      # Android 手机/Termux 安装 snapclient
+│   ├── tv-adb-install.sh      # 通过 ADB 给小米电视安装 Termux + snapclient
+│   └── tv-termux-setup.sh     # 电视端 Termux 配置（被 tv-adb-install.sh 调用）
+├── docs/                      # 额外文档
+├── Dockerfile                 # music-sync 镜像构建
+├── docker-compose-sync.yml   # ★ 推荐部署：snapserver + mopidy + music-sync 三件套
+├── docker-compose.yml         # 简化版（仅 snapserver + mopidy，用于调试）
+└── .env.example               # 环境变量示例
+```
+
+## 快速开始
+
+### 前置条件
+
+- 一台支持 Docker 的 NAS（或任何 Linux 服务器），已安装 `docker` 和 `docker compose`
+- 音乐文件放在 NAS 的某个目录（示例：`/vol1/1000/音乐`）
+- 播放终端与 NAS 在同一局域网
+
+### 一、部署服务端（NAS）
+
+#### 1. 克隆仓库
 
 ```bash
-git clone <repo>
+git clone https://github.com/feng901108/Audio-sync-system.git
 cd Audio-sync-system
-
-# 1) 创建管理员（首次必做）
-node server/init-admin.mjs admin yourpassword
-
-# 2) 启动
-npm start                # 生产
-npm run dev              # 热重启（--watch）
-
-# 3) 浏览器
-# 管理端: http://<服务器 IP>:3000/admin
-# 聆听端: http://<服务器 IP>:3000/
 ```
 
-环境变量：`PORT`（默认 3000）、`HOST`（默认 `0.0.0.0`）。
-
-## 部署（Docker / NAS）
-
-**镜像构建**：`Dockerfile` 用 `node:24-alpine`，国内源走 `docker.m.daocloud.io/library/node:24-alpine`（fnOS 默认 `docker.fnnas.com` 返 401）。
-
-```bash
-docker compose up -d --build      # 标准部署
-docker compose logs -f juguang    # 看日志
-docker compose restart juguang    # 重启
-docker compose down               # 停止并删除容器
-```
-
-`docker-compose.yml` 含健康检查、资源限制、日志轮转；`docker-compose.fnOS.yml` 是给 fnOS Docker 应用 UI 的简化版（去掉了 UI 不识别的字段）。
-
-### NAS（飞牛 fnOS）本机 → NAS 部署流程
-
-> 本机代码推到 GitHub → NAS 通过 WebDAV 同步代码 → NAS 终端 docker 重构建建。
-
-**本机一次性配置**（在项目根）：
+#### 2. 配置环境变量
 
 ```bash
 cp .env.example .env
-# 编辑 .env，确认 NAS_WEBDAV=Z:/juguang（你的 WebDAV 挂载点）
+# 按实际路径修改
+cat > .env <<'EOF'
+TZ=Asia/Shanghai
+MUSIC_DIR=/vol1/1000/音乐
+EOF
 ```
 
-**本机每次开发完**（一行命令）：
+`MUSIC_DIR` 指向 NAS 上的音乐库根目录，会以只读方式挂载到 mopidy 与 music-sync 容器内。
+
+#### 3. 启动三个服务
 
 ```bash
-npm run deploy -- "feat: 你的改动说明"
-# 自动：git add + commit + push origin dev + WebDAV 复制到 Z:/juguang
+docker compose -f docker-compose-sync.yml up -d --build
 ```
 
-**NAS 终端**（每次本机跑完 deploy 后）：
+首次启动会自动构建 `music-sync:latest` 镜像并拉取 `snapcast` / `mopidy` 镜像。
+
+#### 4. 扫描音乐库
 
 ```bash
-bash /vol1/1000/juguang/deploy.sh
-# 自动：docker compose build --no-cache + up -d + 健康检查
+docker compose -f docker-compose-sync.yml exec -T mopidy mopidy local scan
 ```
 
-`scripts/deploy.sh`（本机侧）和 `deploy.sh`（NAS 侧）各自负责一段；两者解耦是因为 fnOS 终端用户不在 docker group，用了 `sudo`。
+扫描完成后，音乐库会出现在控制面板左侧曲目列表中。
 
-## 文件结构
+#### 5. 访问服务
+
+| 地址 | 说明 |
+|------|------|
+| `http://<NAS_IP>:8765/` | 控制面板（左右分栏） |
+| `http://<NAS_IP>:8765/tv.html` | 极简全屏播放界面（电视/手机） |
+| `http://<NAS_IP>:8765/snapweb/` | SnapWeb 音箱管理（已注入深色主题） |
+| `http://<NAS_IP>:1780/` | SnapWeb 原生界面（未注入主题） |
+| `http://<NAS_IP>:6600/` | MPD 协议端口（供外部 MPD 客户端连接） |
+
+### 二、播放端使用
+
+#### 方案 A：浏览器即播放（最简单，推荐电视/手机）
+
+直接在电视或手机浏览器打开：
 
 ```
-juguang/
-├─ package.json              # 零 dependencies，纯启动脚本
-├─ server/
-│  ├─ index.mjs              # HTTP 入口 + 路由注册（~590 行）
-│  ├─ db.mjs                 # node:sqlite 表结构（admins / tracks / devices /
-│  │                          #   playback_state / sessions / zones / playlists）
-│  ├─ auth.mjs               # scrypt 密码 + 自管 session
-│  ├─ scheduler.mjs          # 同步调度核心：play/pause/resume/stop/seek/next/prev、
-│  │                          #   mode（顺序/单曲/随机/循环）、zone CRUD、playlist CRUD
-│  ├─ ws.mjs                 # 自实现 WebSocket + Hub（zone-scoped broadcast）
-│  ├─ multipart.mjs          # 自实现 multipart/form-data 解析（1GB 上限）
-│  ├─ audio-probe.mjs        # MP3 / WAV 时长探测（MP3 首帧 bitrate 推算 CBR 准 VBR 近似；WAV 读 RIFF data/byteRate）
-│  └─ init-admin.mjs         # 初始化管理员 CLI
-├─ web/                      # 零构建，直接静态托管
-│  ├─ index.html             # 聆听页 /
-│  ├─ admin.html             # 管理页 /admin（四象限布局：左上管理tab / 右上播放器 / 左下上传+曲库 / 右下队列）
-│  ├─ sync.js                # 同步客户端核心（NTP + Web Audio API）
-│  └─ styles.css             # 设计系统（Apple Music 风格：纯白 + #ff2d55）
-├─ scripts/
-│  ├─ deploy.sh              # 本机一键部署：git + WebDAV（bash / git bash）
-│  └─ deploy.cmd             # Windows cmd 原生 shim
-├─ data/                     # 运行时数据（gitignore）
-│  ├─ audio/                 # 上传的音频文件
-│  └─ app.db                 # SQLite（首次启动自动建表）
-├─ Dockerfile                # node:24-alpine + tini + curl
-├─ docker-compose.yml        # 标准部署
-├─ docker-compose.fnOS.yml   # fnOS Docker UI 简化版
-├─ .env / .env.example       # 端口、时区、WebDAV 路径（.env 不入库）
-├─ .dockerignore / .gitignore
-├─ README.md                 # 本文件
-└─ CLAUDE.md                 # 开发规范、命令速查、模块速查
+http://<NAS_IP>:8765/tv.html
 ```
 
-## REST API
+- 首次点击屏幕：启动 mopidy 播放 + 本地 Web Audio 解码音频流
+- 再次点击：暂停 / 继续本地播放（不影响其他设备）
+- 60 秒无操作自动进入暗屏模式（OLED 屏幕保护）
+- 刷新页面后进度从 localStorage 恢复，不会重置
 
-所有受保护接口（管理操作）需先 `POST /api/auth/login` 拿 `juguang.sid` cookie。
+> 浏览器自动播放策略要求**用户首次交互后**才能发声，因此必须手动点击屏幕一次。
+
+#### 方案 B：原生 snapclient（最高同步精度）
+
+**Android 手机 / Termux：**
+
+```bash
+bash scripts/termux-install.sh <NAS_IP>
+# 安装完成后：
+snapstart   # 启动 snapclient
+snapstop    # 停止
+```
+
+**小米电视（通过 ADB 一键安装）：**
+
+在电脑上执行：
+
+```bash
+bash scripts/tv-adb-install.sh <电视IP> <NAS_IP>
+# 例：bash scripts/tv-adb-install.sh 192.168.1.200 192.168.1.100
+```
+
+脚本会自动：安装 Termux + Termux:Boot → 推送配置脚本 → 安装 snapclient → 配置开机自启。
+
+**Kodi 设备：**
+
+将 `kodi-plugin/snapcast/` 目录打包为 zip，在 Kodi 中"从 zip 安装插件"，然后在插件设置中填入 `server_ip`（NAS IP）即可。详见 [docs/Kodi插件安装指南.md](docs/Kodi插件安装指南.md)。
+
+**Linux / macOS：**
+
+```bash
+# Debian/Ubuntu
+sudo apt install snapclient
+snapclient -h <NAS_IP>
+
+# macOS
+brew install snapcast
+snapclient -h <NAS_IP>
+```
+
+### 三、日常使用
+
+#### 上传 / 添加新歌
+
+1. 把音乐文件（mp3/flac/m4a 等）放到 `MUSIC_DIR` 目录下
+2. 在控制面板点击「重新扫描音乐库」按钮，或执行：
+   ```bash
+   docker compose -f docker-compose-sync.yml exec -T mopidy mopidy local scan
+   ```
+3. 刷新控制面板即可看到新曲目
+
+#### 多设备同步播放
+
+1. 在控制面板左侧选歌、点击播放
+2. 在 SnapWeb（右侧 iframe）中给每个 snapclient 分配到同一分组
+3. 所有同组设备会自动同步播放，延迟差 < 100ms
+
+## 架构详解
+
+### 音频链路
+
+```
+mopidy 解码音频 → 写入 FIFO (/audio/snapcast_fifo)
+                 ↓
+snapserver 读取 FIFO → 打时间戳 → 通过 TCP:1704 分发
+                 ↓
+snapclient 接收 → 动态重采样 → 本地音频设备播放
+```
+
+关键配置（`config/snapserver/snapserver.conf`）：
+
+```ini
+[stream]
+# 使用 PCM 编码（非 flac），兼容浏览器 Web Audio 解码
+stream = pipe:///audio/snapcast_fifo?name=Mopidy&sampleformat=44100:16:2&codec=pcm
+```
+
+### 控制链路
+
+```
+浏览器 ──HTTP/WS──> music-sync:8765 ──MPD──> mopidy:6600
+```
+
+`music-sync` 是纯**控制面板**，不处理音频流。它通过 MPD 协议控制 mopidy 的播放/暂停/切歌/音量，音频数据始终走 snapcast 链路。
+
+### WebSocket 状态同步
+
+- 后端 `state_broadcaster` 每秒查询 MPD 状态并广播给所有前端
+- 播放中：每秒广播（前端更新进度条）
+- 暂停/停止：只在 track/volume/state 变化时广播
+- 前端 `tv.html` 用 localStorage 持久化进度，刷新后立即恢复
+
+### SnapWeb 反向代理
+
+`music-sync` 对 SnapWeb 做全量反向代理（`/snapweb/*`），实现：
+
+- 同源访问，避免跨域
+- 在 HTML 响应中注入深色主题 CSS
+- 代理 `/jsonrpc` 和 `/stream` WebSocket，让浏览器内 SnapWeb 客户端正常工作
+
+## API 速查
 
 | 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/health` | 健康检查 + 服务端 IP |
-| GET | `/api/auth/me` | 当前登录状态 |
-| POST | `/api/auth/login` / `logout` | 登录 / 登出 |
-| GET | `/api/tracks` | 列出全部曲目 |
-| POST | `/api/tracks` | 上传（multipart，多文件，单文件 ≤1GB） |
-| PATCH | `/api/tracks/:id` | 改标题 / 艺人 |
-| DELETE | `/api/tracks/:id` | 删除（连带文件） |
-| GET | `/api/devices` | 全部设备 |
-| GET | `/api/zones/:zoneId/devices` | 该分区设备 |
-| PATCH | `/api/devices/:id` | 改名 / 调音量 / 移分区 |
-| DELETE | `/api/devices/:id` | 移除（关 WS） |
-| GET | `/api/zones` | 全部分区 + snapshot |
-| POST | `/api/zones` | 新建分区 |
-| PATCH | `/api/zones/:id` | 改名 |
-| DELETE | `/api/zones/:id` | 删除（非内置） |
-| GET | `/api/zones/:zoneId/snapshot` | 该分区播放快照 |
-| POST | `/api/zones/:zoneId/playback/play` | 播放（`{trackId, offsetMs?}`） |
-| POST | `/api/zones/:zoneId/playback/pause` / `resume` / `stop` / `prev` / `next` / `seek` | |
-| PATCH | `/api/zones/:zoneId/playback/mode` | 模式：`sequential` / `loop-one` / `shuffle` / `loop-all` |
-| POST | `/api/zones/:zoneId/queue/enqueue` / `replace` / `clear` | 队列操作 |
-| POST | `/api/zones/:zoneId/queue/load-playlist` | 用歌单替换队列 |
-| GET | `/api/playlists` | 全部歌单 |
-| POST | `/api/playlists` | 新建歌单 |
-| GET | `/api/playlists/:id/tracks` | 歌单曲目 |
-| POST | `/api/playlists/:id/tracks` | 加曲（`{trackIds}`） |
-| PATCH | `/api/playlists/:id` | 改名 |
-| DELETE | `/api/playlists/:id` / `/tracks/:trackId` | 删歌单 / 从歌单移曲 |
-| GET | `/audio/:filename` | 静态音频（Range + ETag + 304 + `Cache-Control: immutable`；iOS 非标 Range 自动降级 200 全发） |
-| WS | `/ws` | 设备注册 + zone-scoped 调度广播 |
+|------|------|------|
+| GET | `/api/state` | 当前播放状态（position/duration/is_playing 等） |
+| GET | `/api/tracks` | 完整播放队列 |
+| GET | `/api/clients` | snapserver 在线客户端列表（500ms 缓存） |
+| GET | `/api/cover?path=<relpath>` | 歌曲封面（找不到则返回 SVG 占位图） |
+| POST | `/api/play` | 播放（body 可空；带 `track_idx` 切歌；带 `position` seek） |
+| POST | `/api/pause` | 暂停 |
+| POST | `/api/next` / `/api/prev` | 下一首 / 上一首 |
+| POST | `/api/seek?position=<秒>` | 跳转进度 |
+| POST | `/api/volume?volume=<0-100>` | 设置音量 |
+| POST | `/api/rescan` | 触发 mopidy 重新扫描音乐库 |
+| WS  | `/ws` | 状态广播（每秒推送） |
+| WS  | `/stream` | snapserver 音频流（二进制 PCM 帧） |
 
-旧路径 `/api/playback/...` 和 `/api/queue/...` 仍可用，内部走 zone=1。下个大版本删除。
+## 常见问题
 
-## 同步原理
+**Q：刷新 tv.html 后进度会重置吗？**
+A：不会。tv.html 用 localStorage 持久化 `position/duration/track`，刷新后立即用缓存渲染，避免 `0:00` 闪烁；WebSocket 推送真实进度后会平滑过渡。
 
-服务端调度器是事实唯一来源。客户端只听命令，不传时钟。
+**Q：tv.html 第一次点击为什么没声音？**
+A：浏览器自动播放策略要求用户交互后才允许播放音频。首次点击会同时：① 发送 `/api/play` 启动 mopidy 播放（让音频流通过 snapserver） ② 唤醒 AudioContext ③ 连接 `/stream` WebSocket 接收 PCM 帧。
 
-1. **NTP 风格时钟同步**：每 2s 客户端 ping 服务端，取最近 10 次 RTT 最小 3 次的 offset 中位数作为本地-服务端时钟差。
-2. **Server tick-driven 位置同步（v4）**：服务端每 200ms ± 25ms 广播 `{type:"sync", positionMs, serverNow, isPlaying}` 给所有 v4 客户端；play/pause/seek 后立即补发一个 tick。客户端用最新 tick + monotonic 外推得到 expected position（替代 v3 的 `startServerTime` 单向开环模型）。
-3. **漂移修正（v4.1 EMA + rate servo）**：每 0.5s 用插值位置时钟（消除 Safari currentTime 250ms 量化噪声）比对预期位置（含 outputLatency 补偿）：EMA 平滑 drift（α=0.3）→ 死区 50ms 内不动 → 50–500ms 用 ±2.5% playbackRate 伺服渐进收敛（`preservesPitch=false` 纯重采样 ≈43 音分封顶，rate 变化迟滞 0.3% 防 iOS 微卡顿）→ ≥500ms 硬 seek（play 后 5s grace 期间不硬 seek，让 servo 消化加载延迟）。
-4. **中途加入**：新连接拿到 snapshot 时算投影位置，紧跟一个 sync tick 让客户端立即拿到位置锚点。
-5. **服务器重启恢复**：`recoverAdvanceTimers()` 在启动时扫描 DB 中 `is_playing=1` 的 zone，重建 `scheduleAdvance` 定时器，保证 loop-one/loop-all/sequential next 在 Docker rebuild 后不失效。
-6. **协议层心跳**：服务端每 10s 发 WS ping frame（opcode 0x9），比 sweep（30s 阈值）更早发现"半开连接"。
+**Q：tv.html 点击会影响其他设备吗？**
+A：不会。`serverPlayRequested` 标志确保只在第一次点击时调用 `/api/play`，后续点击只控制本地 Web Audio 的播放/暂停，不发送任何影响其他设备的 API。
 
-### 音频缓存策略
+**Q：SnapWeb 里看不到客户端？**
+A：需要先在播放设备上启动 snapclient（方案 B）。浏览器端 `tv.html` 不算 snapclient，它直接通过 `/stream` WebSocket 接收音频流。
 
-`server/index.mjs` 的 `serveStatic` 按扩展名分支：
+**Q：CPU 占用很高？**
+A：通常是 FIFO 管道权限问题导致 snapserver 读不到数据循环重试，或 mediasrv 服务冲突。确保：
+- FIFO 权限为 `prw-rw-rw-`：`chmod 666 /vol1/1000/docker/yinyue/data/audio/snapcast_fifo`
+- 停止飞牛 NAS 自带的 mediasrv 服务：`systemctl --user stop mediasrv && systemctl --user disable mediasrv`
 
-| 资源 | Cache-Control | 备注 |
-|---|---|---|
-| `/audio/*`（`.mp3`/`.m4a`/`.aac`/`.ogg`/`.wav`/`.flac`） | `public, max-age=31536000, immutable` | 曲目文件 id 形式不可变；前端仍可 `If-None-Match` 拿 304 |
-| `/index.html` `/admin.html` `/sync.js` `/styles.css` | `no-store, no-cache, must-revalidate` | 前端走 docker rebuild 拉新，避免污染 |
+**Q：OLED 电视长时间播放会烧屏吗？**
+A：tv.html 已内置 OLED 保护：极光背景持续旋转、封面呼吸缩放、所有亮元素都在动；60 秒无操作自动进入暗屏模式（亮度降至 10%）。
 
-ETag 用 `W/"<mtime>-<size>"` 弱校验，二次播放命中走 304 不传 body，省移动流量。
+## 技术栈
 
-**Range 容错**：iOS Safari 偶发发 `bytes=99999999-99999999` 这种 start > total 的非法 Range，服务端不返 416 而是降级 200 全发（响应头 `X-Range-Fallback: 1`），避免客户端重试整个文件把缓存击穿。
+| 组件 | 技术 |
+|------|------|
+| 后端 | Python 3.12 + FastAPI + uvicorn + python-mpd2 + httpx + websockets |
+| 前端（控制面板） | Vue 3 (CDN) + 原生 CSS |
+| 前端（TV） | Vanilla JS + Web Audio API + WebSocket |
+| 音频引擎 | Mopidy (GStreamer 解码) |
+| 同步分发 | Snapcast (snapserver + snapclient) |
+| 容器 | Docker + Docker Compose |
+| Kodi 插件 | Python (xbmcgui) |
 
-### iOS Safari 兼容
+## 开发与调试
 
-iOS Safari 有几个硬性限制，前端做了针对性处理：
+### 重新构建 music-sync 镜像
 
-| 限制 | 应对 |
-|---|---|
-| HTMLAudioElement 主线程解码 | 沿用 `<audio>` + `createMediaElementSource`，不切 AudioBufferSourceNode |
-| autoplay policy 必须用户手势 | 创建 AudioContext 后监听 `click`/`touchstart`/`keydown`，首次手势 `ctx.resume()`；拒绝时 `needsUserGesture=true` + UI 横幅 + "解锁"按钮 |
-| 进入后台 AudioContext suspend | `ctx.onstatechange` 实时追踪，UI 诊断面板可见当前状态 |
-| `<audio>` 偶发切全屏 | 显式设 `playsinline` + `webkit-playsinline` |
-| 非标 Range 重下整个文件 | 服务端降级 200 全发 + `X-Range-Fallback: 1`（见上表） |
-
-诊断面板（`/` 页右下"诊断"折叠）实时显示：`AudioContext` 状态 / 缓冲 ahead（`X.Xs` 或 `0（缓冲耗尽）`）/ seek 次数 / MediaError 码（1=中止 2=网络 3=解码 4=不支持）/ 设备类型。卡顿时第一眼看到根因，不用猜。
-
-可调旋钮（完整列表见 CLAUDE.md §5）：
-- `server/scheduler.mjs` `PRELOAD_MS`（默认 800，v4 仅服务音频加载）
-- `server/ws.mjs` `SYNC_TICK_INTERVAL_MS`（默认 200，v4 tick 广播间隔）
-- `web/sync.js` `DRIFT_DEADBAND_MS`（默认 50）、`DRIFT_EMA_ALPHA`（默认 0.3）
-- `web/sync.js` `RATE_SERVO_MAX`（默认 0.025 = ±2.5%）、`RATE_HYSTERESIS`（默认 0.003）
-- `web/sync.js` `PLAY_GRACE_MS`（默认 5000，play 后不硬 seek 的宽限期）
-- `web/sync.js` `SEEK_THRESHOLD_MS`（默认 500，硬 seek 阈值）
-
-## 设计
-
-- **设计语言**：Apple Music 风格（纯白 + #ff2d55 强调色 + SF Pro 字体 + 8px 网格 + 28px 大圆角）
-- **管理端布局**：四象限单屏（2×2 grid）
-  - 左上：设备 / 歌单 / 分区 三 tab 管理（渐变背景，无弹窗）
-  - 右上：现在播放 hero + 进度条 + 全套控件（上一首 / 快退 / 暂停 / 继续 / 快进 / 下一首 / 停止）+ 模式切换（顺序 / 单曲 / 随机 / 循环）
-  - 左下：上传 + 曲库列表
-  - 右下：当前队列（可拖拽排序）
-- **聆听端**：单设备单 zone；展示 zone 标签、漂移、RTT、时钟差、本机音量
-
-## 验收清单
+修改 `server/main.py` 或 `player/*` 后：
 
 ```bash
-curl http://localhost:3000/api/health   # → {ok: true}
+docker compose -f docker-compose-sync.yml up -d --build music-sync
 ```
 
-浏览器端按顺序：
+### 查看日志
 
-- [ ] `/admin` 用 admin 登录、上传一首 MP3 看到曲库列表
-- [ ] 另开标签打开 `/`，输入设备名加入广播；admin 选歌 ▶ 能听到声音
-- [ ] **同时打开两个浏览器标签作为两个聆听端**，admin 播同一首歌，目测相位差 < 80ms（必要时录音软件测）
-- [ ] iPhone Safari 接入同 WiFi 打开 `http://<服务器 IP>:3000/`，加入广播，与电脑同步
-  - 首次访问需点击页面任意位置解锁音频（iOS autoplay policy）
-  - 展开"诊断"面板确认 `AudioContext: running` 且 `缓冲` 持续 > 0
-- [ ] admin 暂停 / 继续 / 切歌 / 拖拽队列 / 切模式，所有终端动作一致
-- [ ] **缓存验证**：iOS Safari 二次播放同一首歌，Network 应见 `304 Not Modified` 或 `from-disk cache`（不再重下整文件）
-- [ ] 单独调某个设备音量，不影响其它设备
-- [ ] 客户端断 WiFi 5s 再连，自动重连并追到当前进度
-- [ ] ≥5 分钟的歌，结尾各端漂移仍 < 80ms
-- [ ] 多分区：在 zone=1 和 zone=2 各放不同歌，跨区互不影响
-- [ ] 歌单：创建歌单、加曲、改名、载入队列
+```bash
+docker compose -f docker-compose-sync.yml logs -f music-sync
+docker compose -f docker-compose-sync.yml logs -f mopidy
+docker compose -f docker-compose-sync.yml logs -f snapserver
+```
 
-## 已知限制
+### 测试 API
 
-- **时长探测**：MP3 / WAV 准确；M4A / AAC / OGG / FLAC 直接返 0，前端 `<audio>` metadata 兜底
-- **同步精度**：流式 HTMLAudioElement 播放（非 AudioBufferSource 整文件解码，避免大文件内存溢出），位置靠 currentTime + 漂移修正，非采样级精确；目标 < 80ms 相位差
-- **session 不续期**：只检查 `expires_at`，长时间不操作会突然掉登录
-- **iOS Safari 后台 / 锁屏**：AudioContext 暂停，需保持页面前台（前端会显示"解锁"横幅 + 诊断面板的状态）
-- **HTTPS**：生产部署需前置反代（如 Caddy / Nginx / fnOS FN Connect）
-- **文件级鉴权**：`/audio/*` 拿到文件名即可下载，无 token 校验（已加 ETag / immutable，但 URL 本身不签名）
+```bash
+# 获取状态
+curl http://localhost:8765/api/state
 
-## 后续
+# 播放
+curl -X POST http://localhost:8765/api/play -H 'Content-Type: application/json' -d '{}'
 
-- 定时广播 / BGM 调度（cron）
-- Android 原生客户端（Kotlin + ExoPlayer + Foreground Service）— 文档就绪待编码：[`docs/android-port-guide.md`](docs/android-port-guide.md)（协议层）+ [`docs/android-dev-env.md`](docs/android-dev-env.md)（环境 + 出包）
-- mDNS 自动发现服务端
-- HTTPS 终结 TLS / 签名 URL（解决文件级鉴权缺失，详见 `docs/playback-sync-design.md` §6.3 / §6.6）
+# 切到第 3 首并跳到 30 秒
+curl -X POST http://localhost:8765/api/play -H 'Content-Type: application/json' -d '{"track_idx":2,"position":30}'
+```
 
----
+## 许可证
 
-## License
-
-MIT
+本项目仅供个人学习与家庭使用。所使用的开源组件（Snapcast、Mopidy、FastAPI、Vue 等）遵循各自的开源协议。

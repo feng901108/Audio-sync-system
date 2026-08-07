@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+  <category label="3012">
+    <setting id="server_ip" type="text" label="3013" default="" />
+    <setting id="server_port" type="text" label="3014" default="1704" />
+    <setting id="client_name" type="text" label="3010" default="" />
+    <setting id="latency" type="text" label="3015" default="" />
+    <setting id="use_pulse" type="bool" label="3016" default="false" />
+    <setting id="auto_start" type="bool" label="3017" default="false" />
+    <setting id="run_mode" type="enum" label="3018" values="3019|3020" default="service" />
+  </category>
+</settings>
