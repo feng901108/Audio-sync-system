@@ -326,4 +326,21 @@ curl -X POST http://localhost:8765/api/play -H 'Content-Type: application/json' 
 
 ## 许可证
 
-本项目仅供个人学习与家庭使用。所使用的开源组件（Snapcast、Mopidy、FastAPI、Vue 等）遵循各自的开源协议。
+本项目采用 **MIT License**，完全开源，允许任何人自由使用、复制、修改、合并、发布、分发、再授权或销售。
+
+唯一要求：保留版权声明与许可声明。
+
+所使用的开源组件遵循各自的开源协议：
+
+| 组件 | 协议 |
+|------|------|
+| [Snapcast](https://github.com/badaix/snapcast) | GPL-3.0 |
+| [Mopidy](https://github.com/mopidy/mopidy) | Apache-2.0 |
+| [FastAPI](https://github.com/tiangolo/fastapi) | MIT |
+| [Vue.js](https://github.com/vuejs/core) | MIT |
+| [python-mpd2](https://github.com/Mic92/python-mpd2) | BSD-3-Clause |
+| [uvicorn](https://github.com/encode/uvicorn) | BSD-3-Clause |
+| [httpx](https://github.com/encode/httpx) | BSD-3-Clause |
+| [websockets](https://github.com/python-websockets/websockets) | BSD-3-Clause |
+
+详见 [LICENSE](LICENSE) 文件。
